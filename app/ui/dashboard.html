@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Social Ops Dashboard</title>
+    <link rel="stylesheet" href="/dashboard-static/dashboard.css?v=20260305f" />
+  </head>
+  <body>
+    <div class="topo-overlay" aria-hidden="true"></div>
+    <main class="dashboard-shell">
+      <header class="main-nav card-surface">
+        <div class="brand">
+          <span class="brand-mark">✶</span>
+          <span class="brand-text">Social Tasker</span>
+        </div>
+        <nav class="menu" aria-label="Main navigation">
+          <div class="menu-line">
+            <a class="menu-item active" href="/dashboard">Overview</a>
+            <a class="menu-item" href="#board">Kanban</a>
+          </div>
+          <div class="menu-line">
+            <a class="menu-item" href="#timeline">Calendar</a>
+            <a class="menu-item" href="#analytics">Analytics</a>
+          </div>
+        </nav>
+        <div class="actions">
+          <button class="ghost-btn" id="refreshBtn" type="button">Refresh</button>
+          <button class="ghost-btn" id="runRemindersBtn" type="button">Run Reminders</button>
+          <button class="ghost-btn" id="seedDemoBtn" type="button">Seed Demo</button>
+          <button class="primary-btn" id="createTaskBtn" type="button">Add New Task</button>
+        </div>
+      </header>
+
+      <section class="hero card-surface">
+        <div>
+          <p class="eyebrow">Social Content Command Center</p>
+          <h1>Overview</h1>
+          <p class="subtle">One database, two interfaces, shared truth.</p>
+        </div>
+        <div class="hero-badges" id="heroBadges"></div>
+      </section>
+
+      <section class="stats-grid" id="analytics">
+        <article class="metric-card upcoming">
+          <h3>Upcoming Tasks</h3>
+          <p class="metric" id="upcomingMetric">0</p>
+          <span class="metric-note" id="upcomingNote">Loading...</span>
+        </article>
+        <article class="metric-card in-progress">
+          <h3>In-Progress Tasks</h3>
+          <p class="metric" id="inProgressMetric">0</p>
+          <span class="metric-note" id="inProgressNote">Loading...</span>
+        </article>
+        <article class="metric-card completed">
+          <h3>Completed Tasks</h3>
+          <p class="metric" id="completedMetric">0</p>
+          <span class="metric-note" id="completedNote">Loading...</span>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <div class="left-column">
+          <article class="card-surface roadmap" id="timeline">
+            <div class="roadmap-head">
+              <div>
+                <h2>Project Roadmap</h2>
+                <p class="subtle">Calendar-driven timeline from real tasks</p>
+              </div>
+              <div class="pill-switch">
+                <button type="button" class="switch active">Timeline</button>
+                <button type="button" class="switch">Board</button>
+              </div>
+            </div>
+            <div class="timeline-wrap">
+              <div class="timeline-axis" id="timelineAxis"></div>
+              <div class="timeline-lanes" id="timelineLanes"></div>
+            </div>
+          </article>
+
+          <article class="card-surface board" id="board">
+            <div class="board-head">
+              <div>
+                <h2>Kanban Pulse</h2>
+                <span class="subtle" id="kanbanMeta">0 tasks</span>
+              </div>
+              <p class="subtle">Drag card across columns to update status. Click card to edit popup.</p>
+            </div>
+            <div class="board-tools">
+              <span class="subtle">Visible fields:</span>
+              <label><input id="showTypeField" type="checkbox" checked /> Type</label>
+              <label><input id="showAirDateField" type="checkbox" checked /> Air Date</label>
+              <label><input id="showAssigneeField" type="checkbox" checked /> Assignee</label>
+              <label><input id="showMissingField" type="checkbox" checked /> Missing</label>
+            </div>
+            <div class="kanban-columns" id="kanbanColumns"></div>
+          </article>
+        </div>
+
+        <aside class="right-column">
+          <article class="card-surface panel" id="messagesPanel">
+            <div class="panel-head">
+              <h2>Recent Messages</h2>
+              <button class="link-btn" type="button">View all</button>
+            </div>
+            <ul class="panel-list" id="messageList"></ul>
+          </article>
+
+          <article class="card-surface panel" id="todayPanel">
+            <div class="panel-head">
+              <h2>Today's Tasks</h2>
+              <span class="pill" id="todayCount">0</span>
+            </div>
+            <ul class="task-list" id="todayTaskList"></ul>
+          </article>
+        </aside>
+      </section>
+
+      <section class="detail card-surface" id="detailPanel" hidden>
+        <div class="detail-head">
+          <h2 id="detailTitle">Task detail</h2>
+          <div class="detail-head-actions">
+            <button class="ghost-btn" id="closeDetailBtn" type="button">Close</button>
+            <button class="ghost-btn" id="deleteTaskBtn" type="button">Delete</button>
+          </div>
+        </div>
+
+        <div class="detail-topline">
+          <label class="status-combo">
+            <span>Status</span>
+            <select id="statusSelect"></select>
+          </label>
+          <p class="subtle" id="detailMeta"></p>
+        </div>
+
+        <div class="detail-tabs" id="detailTabs">
+          <button class="tab-btn active" data-tab="content" type="button">Content</button>
+          <button class="tab-btn" data-tab="media" type="button">Media</button>
+          <button class="tab-btn" data-tab="checklist" type="button">Checklist</button>
+          <button class="tab-btn" data-tab="comments" type="button">Comments</button>
+          <button class="tab-btn" data-tab="activity" type="button">Activity</button>
+        </div>
+
+        <div class="tab-panel active" data-panel="content">
+          <form id="contentForm" class="form-grid">
+            <label class="field full">
+              <span>Title</span>
+              <input id="contentTitle" type="text" />
+            </label>
+            <label class="field full">
+              <span>Caption</span>
+              <textarea id="contentCaption" rows="7"></textarea>
+            </label>
+            <label class="field">
+              <span>Hashtags (space separated)</span>
+              <input id="contentHashtags" type="text" placeholder="#sale #new" />
+            </label>
+            <label class="field">
+              <span>Mentions (space separated)</span>
+              <input id="contentMentions" type="text" placeholder="@brand @creator" />
+            </label>
+            <label class="field">
+              <span>Assignee Name</span>
+              <select id="contentAssignee"></select>
+            </label>
+            <label class="field">
+              <span>Campaign Name</span>
+              <input id="contentCampaign" type="text" placeholder="LoveSeason" />
+            </label>
+            <label class="field">
+              <span>Air Date</span>
+              <input id="contentAirDate" type="datetime-local" />
+            </label>
+            <div class="field actions-row">
+              <button class="primary-btn" type="submit">Save Content</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="tab-panel" data-panel="media">
+          <form id="mediaForm" class="form-grid">
+            <label class="field full">
+              <span>Product URL</span>
+              <input id="mediaProductUrl" type="url" placeholder="https://..." />
+            </label>
+            <label class="field full">
+              <span>Add media URLs (1 URL per line)</span>
+              <textarea id="mediaUrls" rows="5" placeholder="https://cdn.example.com/a.jpg"></textarea>
+            </label>
+            <div class="field actions-row">
+              <button class="primary-btn" type="submit">Attach Media</button>
+            </div>
+          </form>
+          <div class="list-shell" id="mediaList"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="checklist">
+          <form id="checklistForm" class="form-grid">
+            <label class="field full">
+              <span>Checklist lines (`[x] done` or `[ ] todo`)</span>
+              <textarea id="checklistInput" rows="7" placeholder="[ ] Draft caption\n[x] Upload cover"></textarea>
+            </label>
+            <div class="field actions-row">
+              <button class="primary-btn" type="submit">Save Checklist</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="tab-panel" data-panel="comments">
+          <form id="commentForm" class="inline-form">
+            <input id="commentInput" type="text" placeholder="Write comment..." />
+            <button class="primary-btn" type="submit">Send</button>
+          </form>
+          <div class="list-shell" id="commentList"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="activity">
+          <div class="list-shell" id="activityList"></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="taskModalBackdrop" aria-hidden="true">
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="createTaskTitle">
+        <header class="modal-head">
+          <h3 id="createTaskTitle">Create New Task</h3>
+          <button class="ghost-btn" id="closeCreateModalBtn" type="button">Close</button>
+        </header>
+        <form id="createTaskForm" class="form-grid">
+          <label class="field">
+            <span>Title *</span>
+            <input id="newTitle" required type="text" placeholder="Nick Judy Story" />
+          </label>
+          <label class="field">
+            <span>Type *</span>
+            <select id="newType">
+              <option value="story">Story</option>
+              <option value="reel">Reel</option>
+              <option value="post">Post</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Status</span>
+            <select id="newStatus">
+              <option value="idea">Idea</option>
+              <option value="design">Design</option>
+              <option value="ready">Ready</option>
+              <option value="posted">Posted</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Air Date</span>
+            <input id="newAirDate" type="datetime-local" />
+          </label>
+          <label class="field">
+            <span>Assignee Name</span>
+            <input id="newAssignee" type="text" placeholder="Linh" />
+          </label>
+          <label class="field">
+            <span>Campaign Name</span>
+            <input id="newCampaign" type="text" placeholder="LoveSeason" />
+          </label>
+          <label class="field full">
+            <span>Caption</span>
+            <textarea id="newCaption" rows="3"></textarea>
+          </label>
+          <label class="field">
+            <span>Hashtags</span>
+            <input id="newHashtags" type="text" placeholder="#a #b" />
+          </label>
+          <label class="field">
+            <span>Mentions</span>
+            <input id="newMentions" type="text" placeholder="@x @y" />
+          </label>
+          <label class="field">
+            <span>Product URL</span>
+            <input id="newProductUrl" type="url" />
+          </label>
+          <label class="field full">
+            <span>Media URLs (1 URL per line)</span>
+            <textarea id="newMediaUrls" rows="4"></textarea>
+          </label>
+          <div class="field actions-row full">
+            <button class="primary-btn" type="submit">Create Task</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="/dashboard-static/dashboard.js?v=20260305f" defer></script>
+  </body>
+</html>

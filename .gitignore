@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+social_content.db
+frontend/node_modules/
+frontend/dist/
+.env
+
+uploads/
+.DS_Store
