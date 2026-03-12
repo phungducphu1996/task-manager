@@ -56,6 +56,41 @@ Default DB:
 - `sqlite:///./social_content.db`
 - Override with `DATABASE_URL`
 
+## 1.1) Move to Supabase (shared online DB)
+
+Install Postgres driver:
+```bash
+pip install -r requirements.txt
+```
+
+Set `.env`:
+```bash
+DATABASE_URL=postgresql+psycopg://postgres:<PASSWORD>@db.<PROJECT-REF>.supabase.co:5432/postgres?sslmode=require
+DB_SCHEMA=social
+```
+
+Migrate existing SQLite data to Supabase:
+```bash
+python scripts/migrate_sqlite_to_postgres.py \
+  --source sqlite:///./social_content.db \
+  --target "postgresql+psycopg://postgres:<PASSWORD>@db.<PROJECT-REF>.supabase.co:5432/postgres?sslmode=require" \
+  --target-schema social
+```
+
+Optional (clean target first):
+```bash
+python scripts/migrate_sqlite_to_postgres.py \
+  --source sqlite:///./social_content.db \
+  --target "postgresql+psycopg://postgres:<PASSWORD>@db.<PROJECT-REF>.supabase.co:5432/postgres?sslmode=require" \
+  --target-schema social \
+  --truncate-target
+```
+
+Run app with Supabase DB:
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
+
 ## 2) Implemented Modules
 
 ### Module A: Core Task Service
@@ -178,8 +213,8 @@ curl -X POST http://127.0.0.1:8001/reminders/run \
 
 ## 6) Notes for Production
 
-- Replace SQLite with Supabase Postgres (`DATABASE_URL`).
+- Use Supabase Postgres via `DATABASE_URL`.
 - Wire real Zalo send API in reminder dispatch.
 - Add auth, RLS, and role permissions.
-- Add migration tooling (Alembic).
+- Add Alembic later for schema versioning.
 - Add dashboard frontend (Kanban/Calendar/Detail/Analytics).

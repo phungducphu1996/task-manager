@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -153,6 +156,53 @@ def log_activity(
     )
 
 
+def _normalize_username(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if not cleaned:
+        return None
+    return cleaned
+
+
+def _normalize_role(value: str | None, fallback: str = "content") -> str:
+    cleaned = str(value or "").strip().lower()
+    if not cleaned:
+        return fallback
+    return cleaned[:60]
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000)
+    return f"pbkdf2_sha256${salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored_hash: str | None) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        algorithm, salt, hex_digest = stored_hash.split("$", 2)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    expected = bytes.fromhex(hex_digest)
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000)
+    return hmac.compare_digest(actual, expected)
+
+
+def _resolve_user_for_auth(db: Session, username: str) -> User | None:
+    normalized = _normalize_username(username)
+    if not normalized:
+        return None
+    return (
+        db.execute(select(User).where(func.lower(User.username) == normalized))
+        .scalars()
+        .first()
+    )
+
+
 def get_or_create_user(db: Session, name: str | None, zalo_user_id: str | None = None) -> User | None:
     if not name and not zalo_user_id:
         return None
@@ -161,17 +211,271 @@ def get_or_create_user(db: Session, name: str | None, zalo_user_id: str | None =
     if zalo_user_id:
         statement = statement.where(User.zalo_user_id == zalo_user_id)
     else:
-        statement = statement.where(func.lower(User.name) == name.lower())
+        clean_name = name.strip()
+        statement = statement.where(func.lower(User.name) == clean_name.lower())
 
     user = db.execute(statement).scalars().first()
     if user:
         if zalo_user_id and not user.zalo_user_id:
             user.zalo_user_id = zalo_user_id
+        if not user.is_active:
+            user.is_active = True
         return user
 
-    user = User(name=name or zalo_user_id or "unknown", zalo_user_id=zalo_user_id)
+    safe_name = (name or zalo_user_id or "unknown").strip()[:120]
+    normalized_username = _normalize_username(safe_name.replace(" ", "."))
+    unique_username = normalized_username
+    if unique_username:
+        suffix = 1
+        while db.execute(select(User).where(func.lower(User.username) == unique_username)).scalars().first():
+            unique_username = f"{normalized_username}.{suffix}"
+            suffix += 1
+    user = User(
+        name=safe_name,
+        username=unique_username,
+        role="content",
+        is_active=True,
+        zalo_user_id=zalo_user_id,
+    )
     db.add(user)
     db.flush()
+    return user
+
+
+def authenticate_local_user(db: Session, username: str, password: str) -> User | None:
+    user = _resolve_user_for_auth(db, username)
+    if not user:
+        return None
+    if not user.is_active:
+        return None
+    if not verify_password(password, user.password_hash):
+        return None
+    return user
+
+
+def list_users(db: Session, include_inactive: bool = False) -> list[User]:
+    query = select(User)
+    if not include_inactive:
+        query = query.where(User.is_active.is_(True))
+    return db.execute(query.order_by(User.name.asc())).scalars().all()
+
+
+def get_user_by_id(db: Session, user_id: str) -> User:
+    user = db.get(User, user_id)
+    if not user:
+        raise ValueError("user_not_found")
+    return user
+
+
+def create_user(
+    db: Session,
+    *,
+    name: str,
+    username: str,
+    role: str = "content",
+    avatar_url: str | None = None,
+    password: str,
+    is_active: bool = True,
+) -> User:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("user_name_required")
+    clean_username = _normalize_username(username)
+    if not clean_username:
+        raise ValueError("username_required")
+    if db.execute(select(User).where(func.lower(User.username) == clean_username)).scalars().first():
+        raise ValueError("username_exists")
+    if db.execute(select(User).where(func.lower(User.name) == clean_name.lower())).scalars().first():
+        raise ValueError("user_name_exists")
+    user = User(
+        name=clean_name[:120],
+        username=clean_username[:120],
+        role=_normalize_role(role),
+        avatar_url=(avatar_url or "").strip() or None,
+        password_hash=_hash_password(password),
+        is_active=bool(is_active),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def update_user(
+    db: Session,
+    user_id: str,
+    *,
+    name: str | None = None,
+    username: str | None = None,
+    role: str | None = None,
+    avatar_url: str | None = None,
+    is_active: bool | None = None,
+) -> User:
+    user = get_user_by_id(db, user_id)
+
+    if name is not None:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("user_name_required")
+        duplicate = (
+            db.execute(select(User).where(func.lower(User.name) == clean_name.lower(), User.id != user_id))
+            .scalars()
+            .first()
+        )
+        if duplicate:
+            raise ValueError("user_name_exists")
+        user.name = clean_name[:120]
+
+    if username is not None:
+        clean_username = _normalize_username(username)
+        if not clean_username:
+            raise ValueError("username_required")
+        duplicate = (
+            db.execute(select(User).where(func.lower(User.username) == clean_username, User.id != user_id))
+            .scalars()
+            .first()
+        )
+        if duplicate:
+            raise ValueError("username_exists")
+        user.username = clean_username[:120]
+
+    if role is not None:
+        user.role = _normalize_role(role, fallback=user.role or "content")
+
+    if avatar_url is not None:
+        user.avatar_url = avatar_url.strip() or None
+
+    if is_active is not None:
+        user.is_active = bool(is_active)
+
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def delete_user(db: Session, user_id: str) -> User:
+    user = get_user_by_id(db, user_id)
+    user.is_active = False
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def set_user_password(db: Session, user_id: str, password: str) -> User:
+    user = get_user_by_id(db, user_id)
+    user.password_hash = _hash_password(password)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def set_user_avatar(db: Session, user_id: str, file: Base64MediaFileIn) -> User:
+    user = get_user_by_id(db, user_id)
+    kind, _storage_path, url = _save_base64_media_file(file)
+    if kind != "image":
+        raise ValueError("avatar_must_be_image")
+    user.avatar_url = url
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def get_user_by_principal(db: Session, principal_user_id: str, principal_username: str) -> User | None:
+    by_id = db.get(User, principal_user_id) if principal_user_id else None
+    if by_id:
+        return by_id
+    normalized_username = _normalize_username(principal_username)
+    if not normalized_username:
+        return None
+    return (
+        db.execute(select(User).where(func.lower(User.username) == normalized_username))
+        .scalars()
+        .first()
+    )
+
+
+def ensure_principal_user(
+    db: Session,
+    *,
+    principal_user_id: str,
+    principal_username: str,
+    role: str,
+    name: str | None = None,
+    avatar_url: str | None = None,
+) -> User:
+    user = get_user_by_principal(db, principal_user_id, principal_username)
+    if user:
+        changed = False
+        normalized_username = _normalize_username(principal_username)
+        if normalized_username and user.username != normalized_username:
+            duplicate = (
+                db.execute(select(User).where(func.lower(User.username) == normalized_username, User.id != user.id))
+                .scalars()
+                .first()
+            )
+            if not duplicate:
+                user.username = normalized_username
+                changed = True
+        if name and user.name != name:
+            user.name = name[:120]
+            changed = True
+        normalized_role = _normalize_role(role, fallback=user.role or "content")
+        if user.role != normalized_role:
+            user.role = normalized_role
+            changed = True
+        if avatar_url is not None and user.avatar_url != avatar_url:
+            user.avatar_url = avatar_url
+            changed = True
+        if not user.is_active:
+            user.is_active = True
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(user)
+        return user
+
+    safe_name = (name or principal_username or "User").strip()[:120]
+    normalized_username = _normalize_username(principal_username) or _normalize_username(safe_name) or None
+    payload: dict[str, Any] = {
+        "name": safe_name,
+        "username": normalized_username,
+        "role": _normalize_role(role),
+        "avatar_url": avatar_url,
+        "is_active": True,
+    }
+    if principal_user_id:
+        payload["id"] = principal_user_id
+    user = User(**payload)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def update_my_profile(
+    db: Session,
+    *,
+    user_id: str,
+    name: str | None = None,
+    username: str | None = None,
+    avatar_url: str | None = None,
+) -> User:
+    return update_user(db, user_id, name=name, username=username, avatar_url=avatar_url)
+
+
+def change_my_password(
+    db: Session,
+    *,
+    user_id: str,
+    current_password: str,
+    new_password: str,
+) -> User:
+    user = get_user_by_id(db, user_id)
+    if user.password_hash and not verify_password(current_password, user.password_hash):
+        raise ValueError("current_password_invalid")
+    user.password_hash = _hash_password(new_password)
+    db.commit()
+    db.refresh(user)
     return user
 
 
@@ -732,6 +1036,8 @@ def task_to_response(task: SocialTask) -> dict:
         "air_date": _to_local(task.air_date),
         "status": task.status,
         "assignee_id": task.assignee_id,
+        "assignee_name": task.assignee.name if task.assignee else None,
+        "campaign_name": task.campaign.name if task.campaign else None,
         "created_by": task.created_by,
         "created_at": _to_local(task.created_at),
         "updated_at": _to_local(task.updated_at),
@@ -848,6 +1154,103 @@ def _resolve_campaign_id(db: Session, campaign_name: str | None) -> str | None:
         return None
     campaign = db.execute(select(Campaign).where(func.lower(Campaign.name) == campaign_name.lower())).scalars().first()
     return campaign.id if campaign else None
+
+
+def list_campaigns(db: Session) -> list[Campaign]:
+    return db.execute(select(Campaign).order_by(Campaign.created_at.desc(), Campaign.name.asc())).scalars().all()
+
+
+def create_campaign(
+    db: Session,
+    name: str,
+    status: str = "planning",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    description: str | None = None,
+    link_url: str | None = None,
+    requires_product_url: bool = False,
+    brand: str | None = None,
+    platform: str | None = None,
+) -> Campaign:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("campaign_name_required")
+    existing = db.execute(select(Campaign).where(func.lower(Campaign.name) == clean_name.lower())).scalars().first()
+    if existing:
+        raise ValueError("campaign_name_exists")
+    campaign = Campaign(
+        name=clean_name,
+        status=(status or "planning").strip().lower() or "planning",
+        start_date=start_date.strip() if start_date else None,
+        end_date=end_date.strip() if end_date else None,
+        description=description.strip() if description else None,
+        link_url=link_url.strip() if link_url else None,
+        requires_product_url=bool(requires_product_url),
+        brand=brand.strip() if brand else None,
+        platform=platform.strip() if platform else None,
+    )
+    db.add(campaign)
+    db.commit()
+    db.refresh(campaign)
+    return campaign
+
+
+def update_campaign(
+    db: Session,
+    campaign_id: str,
+    name: str | None = None,
+    status: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    description: str | None = None,
+    link_url: str | None = None,
+    requires_product_url: bool | None = None,
+    brand: str | None = None,
+    platform: str | None = None,
+) -> Campaign:
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise ValueError("campaign_not_found")
+    if name is not None:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("campaign_name_required")
+        existing = db.execute(
+            select(Campaign).where(func.lower(Campaign.name) == clean_name.lower(), Campaign.id != campaign_id)
+        ).scalars().first()
+        if existing:
+            raise ValueError("campaign_name_exists")
+        campaign.name = clean_name
+    if status is not None:
+        campaign.status = (status or "planning").strip().lower() or "planning"
+    if start_date is not None:
+        campaign.start_date = start_date.strip() if start_date else None
+    if end_date is not None:
+        campaign.end_date = end_date.strip() if end_date else None
+    if description is not None:
+        campaign.description = description.strip() if description else None
+    if link_url is not None:
+        campaign.link_url = link_url.strip() if link_url else None
+    if requires_product_url is not None:
+        campaign.requires_product_url = bool(requires_product_url)
+    if brand is not None:
+        campaign.brand = brand.strip() if brand else None
+    if platform is not None:
+        campaign.platform = platform.strip() if platform else None
+    db.commit()
+    db.refresh(campaign)
+    return campaign
+
+
+def delete_campaign(db: Session, campaign_id: str) -> None:
+    campaign = db.get(Campaign, campaign_id)
+    if not campaign:
+        raise ValueError("campaign_not_found")
+    tasks = db.execute(select(SocialTask).where(SocialTask.campaign_id == campaign_id)).scalars().all()
+    for task in tasks:
+        task.campaign_id = None
+    db.delete(campaign)
+    db.commit()
 
 
 def list_hashtag_groups(db: Session) -> list[HashtagGroup]:

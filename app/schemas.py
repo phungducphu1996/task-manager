@@ -126,6 +126,10 @@ class Base64MediaUploadRequest(BaseModel):
     files: list[Base64MediaFileIn] = Field(default_factory=list)
 
 
+class AvatarUploadRequest(BaseModel):
+    file: Base64MediaFileIn
+
+
 class ValidateResult(BaseModel):
     ok: bool
     missing_fields: list[str]
@@ -134,7 +138,9 @@ class ValidateResult(BaseModel):
 class PrincipalOut(BaseModel):
     user_id: str
     username: str
+    name: str | None = None
     role: str
+    avatar_url: str | None = None
     is_admin: bool
     is_seller: bool
 
@@ -147,7 +153,96 @@ class LoginRequest(BaseModel):
 class SellerOut(BaseModel):
     id: str
     username: str
+    name: str | None = None
+    role: str | None = None
+    avatar_url: str | None = None
     is_active: bool = True
+
+
+class UserCreate(BaseModel):
+    name: str
+    username: str
+    role: str = "content"
+    avatar_url: str | None = None
+    password: str = Field(min_length=6, max_length=128)
+    is_active: bool = True
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    username: str | None = None
+    role: str | None = None
+    avatar_url: str | None = None
+    is_active: bool | None = None
+
+
+class UserPasswordUpdate(BaseModel):
+    password: str = Field(min_length=6, max_length=128)
+
+
+class ProfileUpdate(BaseModel):
+    name: str | None = None
+    username: str | None = None
+    avatar_url: str | None = None
+
+
+class ProfilePasswordUpdate(BaseModel):
+    current_password: str | None = Field(default=None, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class UserOut(BaseModel):
+    id: str
+    name: str
+    username: str | None = None
+    role: str
+    avatar_url: str | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CampaignCreate(BaseModel):
+    name: str
+    status: str = "planning"
+    start_date: str | None = None
+    end_date: str | None = None
+    description: str | None = None
+    link_url: str | None = None
+    requires_product_url: bool = False
+    brand: str | None = None
+    platform: str | None = None
+
+
+class CampaignUpdate(BaseModel):
+    name: str | None = None
+    status: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    description: str | None = None
+    link_url: str | None = None
+    requires_product_url: bool | None = None
+    brand: str | None = None
+    platform: str | None = None
+
+
+class CampaignOut(BaseModel):
+    id: str
+    name: str
+    status: str
+    start_date: str | None = None
+    end_date: str | None = None
+    description: str | None = None
+    link_url: str | None = None
+    requires_product_url: bool
+    brand: str | None = None
+    platform: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CollectionCreate(BaseModel):
@@ -249,6 +344,8 @@ class TaskOut(BaseModel):
     air_date: datetime | None = None
     status: str
     assignee_id: str | None = None
+    assignee_name: str | None = None
+    campaign_name: str | None = None
     created_by: str | None = None
     created_at: datetime
     updated_at: datetime

@@ -17,14 +17,12 @@ const statusLabels = {
 const kanban = ref({ idea: [], design: [], ready: [], posted: [] })
 const calendarTasks = ref([])
 const analytics = ref({ total_this_week: 0, overdue_count: 0, campaign_count: 0 })
-const sellers = ref([])
-const collections = ref([])
-const hashtagGroups = ref([])
-const hashtags = ref([])
+const users = ref([])
+const campaigns = ref([])
 const loading = ref(false)
 const authLoading = ref(false)
+const activeView = ref('overview')
 const settingsOpen = ref(false)
-const settingsTab = ref('collections')
 
 const auth = reactive({
   token: '',
@@ -48,6 +46,7 @@ const createMode = ref(false)
 const createType = ref('story')
 
 const draggingTaskId = ref(null)
+const dragOverStatus = ref('')
 const detailPendingMedia = ref([])
 const failedTimelineThumbs = ref(new Set())
 const timelineViewportRef = ref(null)
@@ -100,21 +99,48 @@ const checklistText = ref('')
 const commentText = ref('')
 const statusValue = ref('idea')
 
-const collectionForm = reactive({
+const campaignStatusOptions = ['planning', 'active', 'completed', 'paused']
+const campaignEditor = reactive({
+  open: false,
+  saving: false,
+  editingId: '',
   name: '',
-  color: '',
-  description: ''
+  status: 'planning',
+  start_date: '',
+  end_date: '',
+  link_url: '',
+  description: '',
+  requires_product_url: false,
+  brand: '',
+  platform: ''
 })
 
-const hashtagGroupForm = reactive({
+const profileForm = reactive({
   name: '',
-  scope: 'global'
+  username: '',
+  avatar_url: ''
 })
 
-const hashtagForm = reactive({
-  group_id: '',
-  tag: ''
+const passwordForm = reactive({
+  current_password: '',
+  new_password: '',
+  confirm_password: ''
 })
+
+const profileSaving = ref(false)
+const passwordSaving = ref(false)
+
+const userEditor = reactive({
+  name: '',
+  username: '',
+  role: 'content',
+  password: ''
+})
+const usersLoading = ref(false)
+const userRows = ref([])
+const profileAvatarFile = ref(null)
+const newUserAvatarFile = ref(null)
+const rowAvatarFiles = reactive({})
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -190,6 +216,27 @@ function toInputDatetime(value) {
   const hour = String(date.getHours()).padStart(2, '0')
   const minute = String(date.getMinutes()).padStart(2, '0')
   return `${year}-${month}-${day}T${hour}:${minute}`
+}
+
+function parseIsoDay(value) {
+  const raw = String(value || '').trim()
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  const y = Number(match[1])
+  const m = Number(match[2]) - 1
+  const d = Number(match[3])
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null
+  const date = new Date(y, m, d)
+  if (Number.isNaN(date.valueOf())) return null
+  return date
+}
+
+function campaignTimelineIcon(status) {
+  const key = String(status || '').toLowerCase()
+  if (key === 'active') return '🟢'
+  if (key === 'completed') return '✅'
+  if (key === 'paused') return '⏸️'
+  return '📅'
 }
 
 function initials(name) {
@@ -310,6 +357,7 @@ async function saveNoteFromPreview() {
     notePreview.draft = normalizedDraft
     applyQuickNoteToLocalState(notePreview.taskId, normalizedDraft || null)
     showToast('Quick note saved')
+    closeNotePreview()
   } catch (error) {
     showToast(`Save note failed (${error.message})`, true)
   } finally {
@@ -363,6 +411,16 @@ function setTaskNoMediaColor(taskId, color) {
   }
 }
 
+function notePreviewColor() {
+  if (!notePreview.taskId) return timelinePrefs.noMediaBg
+  return getTaskNoMediaColor(notePreview.taskId)
+}
+
+function onNotePreviewColorChange(color) {
+  if (!notePreview.taskId) return
+  setTaskNoMediaColor(notePreview.taskId, color)
+}
+
 function focusTimelineToToday() {
   const viewport = timelineViewportRef.value
   if (!viewport || timeline.value.totalDays <= 0) return
@@ -398,6 +456,18 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(new Error('file_read_failed'))
     reader.readAsDataURL(file)
   })
+}
+
+async function fileToBase64Payload(file) {
+  if (!file) throw new Error('missing_file')
+  const raw = await readFileAsDataUrl(file)
+  const [, dataBase64] = String(raw || '').split(',', 2)
+  if (!dataBase64) throw new Error('invalid_file_payload')
+  return {
+    filename: file.name || 'avatar.png',
+    content_type: file.type || null,
+    data_base64: dataBase64
+  }
 }
 
 function inferMediaKind(file) {
@@ -525,6 +595,14 @@ function clearAuthState() {
   auth.user = null
   auth.username = ''
   auth.password = ''
+  profileForm.name = ''
+  profileForm.username = ''
+  profileForm.avatar_url = ''
+  profileAvatarFile.value = null
+  newUserAvatarFile.value = null
+  Object.keys(rowAvatarFiles).forEach((userId) => {
+    delete rowAvatarFiles[userId]
+  })
   timelineAutoFocusDone.value = false
   closeNotePreview()
   saveAuthState()
@@ -542,7 +620,14 @@ async function login() {
       body: { username: auth.username.trim(), password: auth.password }
     })
     auth.token = result.access_token || ''
-    auth.user = result.user || null
+    auth.user = result.user
+      ? {
+          ...result.user,
+          name: result.user.name || result.user.username || '',
+          avatar_url: result.user.avatar_url || ''
+        }
+      : null
+    syncProfileForm()
     saveAuthState()
     await bootstrapAfterAuth()
     auth.password = ''
@@ -561,8 +646,11 @@ async function refreshMe() {
     auth.user = {
       id: me.user_id,
       username: me.username,
-      role: me.role
+      name: me.name || me.username,
+      role: me.role,
+      avatar_url: me.avatar_url || ''
     }
+    syncProfileForm()
     saveAuthState()
     return true
   } catch {
@@ -576,47 +664,289 @@ function logout() {
   showToast('Logged out')
 }
 
-async function loadSellers() {
+function openProfileSettings() {
+  syncProfileForm()
+  passwordForm.current_password = ''
+  passwordForm.new_password = ''
+  passwordForm.confirm_password = ''
+  profileAvatarFile.value = null
+  settingsOpen.value = true
+}
+
+function onProfileAvatarChange(event) {
+  const file = event?.target?.files?.[0] || null
+  profileAvatarFile.value = file
+}
+
+function onNewUserAvatarChange(event) {
+  const file = event?.target?.files?.[0] || null
+  newUserAvatarFile.value = file
+}
+
+function onManagedUserAvatarChange(userId, event) {
+  const file = event?.target?.files?.[0] || null
+  if (!file) {
+    delete rowAvatarFiles[userId]
+    return
+  }
+  rowAvatarFiles[userId] = file
+}
+
+async function loadCampaigns() {
   if (!auth.token) return
   try {
-    sellers.value = await requestJson('/sellers')
+    campaigns.value = await requestJson('/campaigns')
   } catch {
-    sellers.value = []
+    campaigns.value = []
   }
 }
 
-async function loadCollections() {
-  if (!auth.token) return
-  try {
-    collections.value = await requestJson('/collections')
-  } catch {
-    collections.value = []
-  }
-}
-
-async function loadHashtagGroups() {
-  if (!auth.token) return
-  try {
-    hashtagGroups.value = await requestJson('/hashtag-groups')
-    if (!hashtagForm.group_id && hashtagGroups.value.length > 0) {
-      hashtagForm.group_id = hashtagGroups.value[0].id
+function hydrateUserRows() {
+  userRows.value = users.value.map((user) => ({
+    id: user.id,
+    name: user.name || '',
+    username: user.username || '',
+    role: user.role || 'content',
+    avatar_url: user.avatar_url || '',
+    is_active: Boolean(user.is_active),
+    temp_password: ''
+  }))
+  const validIds = new Set(userRows.value.map((row) => row.id))
+  Object.keys(rowAvatarFiles).forEach((userId) => {
+    if (!validIds.has(userId)) {
+      delete rowAvatarFiles[userId]
     }
+  })
+}
+
+async function loadUsers(includeInactive = true) {
+  if (!auth.token) return
+  try {
+    usersLoading.value = true
+    const query = includeInactive ? '?include_inactive=true' : ''
+    users.value = await requestJson(`/users${query}`)
+    hydrateUserRows()
   } catch {
-    hashtagGroups.value = []
+    users.value = []
+    userRows.value = []
+  } finally {
+    usersLoading.value = false
   }
 }
 
-async function loadHashtags() {
+function syncProfileForm() {
+  profileForm.name = auth.user?.name || ''
+  profileForm.username = auth.user?.username || ''
+  profileForm.avatar_url = auth.user?.avatar_url || ''
+}
+
+async function loadProfile() {
   if (!auth.token) return
   try {
-    hashtags.value = await requestJson('/hashtags')
+    const me = await requestJson('/profile')
+    auth.user = {
+      id: me.id,
+      username: me.username || auth.user?.username || '',
+      name: me.name || '',
+      role: me.role || auth.user?.role || 'content',
+      avatar_url: me.avatar_url || ''
+    }
+    saveAuthState()
+    syncProfileForm()
   } catch {
-    hashtags.value = []
+    syncProfileForm()
   }
+}
+
+async function saveProfile() {
+  try {
+    profileSaving.value = true
+    const updated = await requestJson('/profile', {
+      method: 'PATCH',
+      body: {
+        name: profileForm.name.trim() || null,
+        username: profileForm.username.trim() || null
+      }
+    })
+    auth.user = {
+      ...auth.user,
+      id: updated.id,
+      username: updated.username || auth.user?.username || '',
+      name: updated.name || '',
+      role: updated.role || auth.user?.role || 'content',
+      avatar_url: updated.avatar_url || ''
+    }
+    saveAuthState()
+    await loadUsers(isAdmin.value)
+    syncProfileForm()
+    showToast('Profile saved')
+    settingsOpen.value = false
+  } catch (error) {
+    showToast(`Save profile failed (${error.message})`, true)
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+async function uploadProfileAvatar() {
+  if (!profileAvatarFile.value) {
+    showToast('Choose an avatar file first', true)
+    return
+  }
+  try {
+    profileSaving.value = true
+    const filePayload = await fileToBase64Payload(profileAvatarFile.value)
+    const updated = await requestJson('/profile/avatar', {
+      method: 'PUT',
+      body: { file: filePayload }
+    })
+    auth.user = {
+      ...auth.user,
+      avatar_url: updated.avatar_url || ''
+    }
+    profileForm.avatar_url = updated.avatar_url || ''
+    profileAvatarFile.value = null
+    saveAuthState()
+    await loadUsers(isAdmin.value)
+    showToast('Avatar uploaded')
+  } catch (error) {
+    showToast(`Upload avatar failed (${error.message})`, true)
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+async function saveMyPassword() {
+  if (!passwordForm.new_password) {
+    showToast('Enter new password', true)
+    return
+  }
+  if (passwordForm.new_password !== passwordForm.confirm_password) {
+    showToast('Password confirmation mismatch', true)
+    return
+  }
+  try {
+    passwordSaving.value = true
+    await requestJson('/profile/password', {
+      method: 'PUT',
+      body: {
+        current_password: passwordForm.current_password,
+        new_password: passwordForm.new_password
+      }
+    })
+    passwordForm.current_password = ''
+    passwordForm.new_password = ''
+    passwordForm.confirm_password = ''
+    showToast('Password updated')
+    settingsOpen.value = false
+  } catch (error) {
+    showToast(`Change password failed (${error.message})`, true)
+  } finally {
+    passwordSaving.value = false
+  }
+}
+
+function resetCampaignEditor() {
+  campaignEditor.editingId = ''
+  campaignEditor.name = ''
+  campaignEditor.status = 'planning'
+  campaignEditor.start_date = ''
+  campaignEditor.end_date = ''
+  campaignEditor.link_url = ''
+  campaignEditor.description = ''
+  campaignEditor.requires_product_url = false
+  campaignEditor.brand = ''
+  campaignEditor.platform = ''
+}
+
+function openCampaignCreate() {
+  resetCampaignEditor()
+  campaignEditor.open = true
+}
+
+function openCampaignEdit(campaign) {
+  campaignEditor.editingId = String(campaign?.id || '')
+  campaignEditor.name = campaign?.name || ''
+  campaignEditor.status = campaign?.status || 'planning'
+  campaignEditor.start_date = campaign?.start_date || ''
+  campaignEditor.end_date = campaign?.end_date || ''
+  campaignEditor.link_url = campaign?.link_url || ''
+  campaignEditor.description = campaign?.description || ''
+  campaignEditor.requires_product_url = Boolean(campaign?.requires_product_url)
+  campaignEditor.brand = campaign?.brand || ''
+  campaignEditor.platform = campaign?.platform || ''
+  campaignEditor.open = true
+}
+
+function closeCampaignEditor() {
+  campaignEditor.open = false
+  campaignEditor.saving = false
+}
+
+async function saveCampaign() {
+  const name = campaignEditor.name.trim()
+  if (!name) {
+    showToast('Campaign name is required', true)
+    return
+  }
+  const payload = {
+    name,
+    status: (campaignEditor.status || 'planning').trim() || 'planning',
+    start_date: campaignEditor.start_date || null,
+    end_date: campaignEditor.end_date || null,
+    link_url: campaignEditor.link_url.trim() || null,
+    description: campaignEditor.description.trim() || null,
+    requires_product_url: Boolean(campaignEditor.requires_product_url),
+    brand: campaignEditor.brand.trim() || null,
+    platform: campaignEditor.platform.trim() || null
+  }
+  try {
+    campaignEditor.saving = true
+    if (campaignEditor.editingId) {
+      await requestJson(`/campaigns/${campaignEditor.editingId}`, { method: 'PATCH', body: payload })
+      showToast('Campaign updated')
+    } else {
+      await requestJson('/campaigns', { method: 'POST', body: payload })
+      showToast('Campaign created')
+    }
+    closeCampaignEditor()
+    await Promise.all([loadCampaigns(), loadDashboard()])
+  } catch (error) {
+    showToast(`Save campaign failed (${error.message})`, true)
+  } finally {
+    campaignEditor.saving = false
+  }
+}
+
+async function removeCampaign(campaignId) {
+  if (!window.confirm('Delete this campaign?')) return
+  try {
+    await requestJson(`/campaigns/${campaignId}`, { method: 'DELETE' })
+    if (campaignEditor.editingId === campaignId) {
+      closeCampaignEditor()
+    }
+    if (contentForm.campaign_name && campaigns.value.find((row) => row.id === campaignId)?.name === contentForm.campaign_name) {
+      contentForm.campaign_name = ''
+    }
+    await Promise.all([loadCampaigns(), loadDashboard()])
+    showToast('Campaign deleted')
+  } catch (error) {
+    showToast(`Delete campaign failed (${error.message})`, true)
+  }
+}
+
+function campaignDateRange(campaign) {
+  const start = String(campaign?.start_date || '').trim()
+  const end = String(campaign?.end_date || '').trim()
+  if (start && end) return `${start} → ${end}`
+  if (start) return `From ${start}`
+  if (end) return `Until ${end}`
+  return 'No date range'
 }
 
 async function bootstrapAfterAuth() {
-  await Promise.all([loadDashboard(), loadSellers(), loadCollections(), loadHashtagGroups(), loadHashtags()])
+  await loadProfile()
+  await Promise.all([loadDashboard(), loadCampaigns(), loadUsers(isAdmin.value)])
   if (!timelineAutoFocusDone.value) {
     await nextTick()
     focusTimelineToToday()
@@ -625,84 +955,122 @@ async function bootstrapAfterAuth() {
   openFromPath()
 }
 
-async function createCollection() {
-  const name = collectionForm.name.trim()
-  if (!name) return
+function openUsersView() {
+  activeView.value = 'users'
+  window.history.pushState({}, '', `${dashboardBasePath()}/users`)
+}
+
+async function createManagedUser() {
+  const name = userEditor.name.trim()
+  const username = userEditor.username.trim().toLowerCase()
+  if (!name || !username || !userEditor.password) {
+    showToast('Name, username and password are required', true)
+    return
+  }
   try {
-    await requestJson('/collections', {
+    const created = await requestJson('/users', {
       method: 'POST',
       body: {
         name,
-        color: collectionForm.color.trim() || null,
-        description: collectionForm.description.trim() || null
+        username,
+        role: userEditor.role.trim() || 'content',
+        password: userEditor.password,
+        is_active: true
       }
     })
-    collectionForm.name = ''
-    collectionForm.color = ''
-    collectionForm.description = ''
-    await loadCollections()
-    showToast('Collection created')
+    if (newUserAvatarFile.value) {
+      const filePayload = await fileToBase64Payload(newUserAvatarFile.value)
+      await requestJson(`/users/${created.id}/avatar`, {
+        method: 'PUT',
+        body: { file: filePayload }
+      })
+    }
+    userEditor.name = ''
+    userEditor.username = ''
+    userEditor.role = 'content'
+    userEditor.password = ''
+    newUserAvatarFile.value = null
+    await loadUsers(true)
+    showToast('User created')
   } catch (error) {
-    showToast(`Create collection failed (${error.message})`, true)
+    showToast(`Create user failed (${error.message})`, true)
   }
 }
 
-async function deleteCollection(collectionId) {
+async function saveManagedUser(row) {
   try {
-    await requestJson(`/collections/${collectionId}`, { method: 'DELETE' })
-    await loadCollections()
-    showToast('Collection deleted')
-  } catch (error) {
-    showToast(`Delete collection failed (${error.message})`, true)
-  }
-}
-
-async function createHashtagGroup() {
-  const name = hashtagGroupForm.name.trim()
-  if (!name) return
-  try {
-    await requestJson('/hashtag-groups', {
-      method: 'POST',
+    await requestJson(`/users/${row.id}`, {
+      method: 'PATCH',
       body: {
-        name,
-        scope: hashtagGroupForm.scope
+        name: row.name.trim(),
+        username: row.username.trim().toLowerCase(),
+        role: row.role.trim() || 'content',
+        is_active: Boolean(row.is_active)
       }
     })
-    hashtagGroupForm.name = ''
-    hashtagGroupForm.scope = 'global'
-    await loadHashtagGroups()
-    showToast('Hashtag group created')
+    if (auth.user?.id === row.id) {
+      await loadProfile()
+    }
+    await loadUsers(true)
+    showToast('User saved')
   } catch (error) {
-    showToast(`Create group failed (${error.message})`, true)
+    showToast(`Save user failed (${error.message})`, true)
   }
 }
 
-async function createHashtag() {
-  const tag = hashtagForm.tag.trim()
-  if (!hashtagForm.group_id || !tag) return
+async function uploadManagedUserAvatar(row) {
+  const file = rowAvatarFiles[row.id]
+  if (!file) {
+    showToast('Choose avatar file for this user first', true)
+    return
+  }
   try {
-    await requestJson('/hashtags', {
-      method: 'POST',
-      body: {
-        group_id: hashtagForm.group_id,
-        tag
-      }
+    const filePayload = await fileToBase64Payload(file)
+    await requestJson(`/users/${row.id}/avatar`, {
+      method: 'PUT',
+      body: { file: filePayload }
     })
-    hashtagForm.tag = ''
-    await loadHashtags()
-    showToast('Hashtag added')
+    delete rowAvatarFiles[row.id]
+    await loadUsers(true)
+    if (auth.user?.id === row.id) {
+      await loadProfile()
+    }
+    showToast('Avatar updated')
   } catch (error) {
-    showToast(`Add hashtag failed (${error.message})`, true)
+    showToast(`Upload avatar failed (${error.message})`, true)
   }
 }
 
-async function deleteHashtag(hashtagId) {
+async function saveManagedUserPassword(row) {
+  const newPassword = String(row.temp_password || '')
+  if (!newPassword) {
+    showToast('Enter new password first', true)
+    return
+  }
   try {
-    await requestJson(`/hashtags/${hashtagId}`, { method: 'DELETE' })
-    await loadHashtags()
-    showToast('Hashtag deleted')
+    await requestJson(`/users/${row.id}/password`, {
+      method: 'PUT',
+      body: { password: newPassword }
+    })
+    row.temp_password = ''
+    showToast('Password updated')
   } catch (error) {
-    showToast(`Delete hashtag failed (${error.message})`, true)
+    showToast(`Set password failed (${error.message})`, true)
+  }
+}
+
+async function removeManagedUser(row) {
+  if (!window.confirm(`Disable user ${row.name || row.username}?`)) return
+  try {
+    await requestJson(`/users/${row.id}`, { method: 'DELETE' })
+    if (auth.user?.id === row.id) {
+      logout()
+      return
+    }
+    await loadUsers(true)
+    showToast('User disabled')
+  } catch (error) {
+    showToast(`Disable user failed (${error.message})`, true)
   }
 }
 
@@ -713,6 +1081,10 @@ const summaryById = computed(() => {
   flatTasks.value.forEach((task) => map.set(task.id, task))
   return map
 })
+
+const isAdmin = computed(() => String(auth.user?.role || '').toLowerCase() === 'admin')
+
+const currentUserAvatar = computed(() => auth.user?.avatar_url || '')
 
 const heroBadges = computed(() => [
   `This week: ${analytics.value.total_this_week ?? 0}`,
@@ -742,8 +1114,8 @@ const todayItems = computed(() => {
 
 const assigneeOptions = computed(() => {
   const options = new Set()
-  sellers.value.forEach((seller) => {
-    if (seller.username) options.add(seller.username)
+  users.value.forEach((user) => {
+    if (user.is_active && user.name) options.add(user.name)
   })
   flatTasks.value.forEach((task) => {
     if (task.assignee) options.add(task.assignee)
@@ -752,16 +1124,47 @@ const assigneeOptions = computed(() => {
   return [...options].sort((a, b) => a.localeCompare(b))
 })
 
+const campaignOptions = computed(() => {
+  const rows = [...campaigns.value].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+  const current = contentForm.campaign_name.trim()
+  if (current && !rows.some((row) => row.name === current)) {
+    rows.unshift({ id: `custom-${current}`, name: current })
+  }
+  return rows
+})
+
 const timeline = computed(() => {
   const items = calendarTasks.value.filter((row) => row.air_date)
+  const campaignRanges = campaigns.value
+    .map((campaign) => {
+      const startRaw = parseIsoDay(campaign.start_date)
+      const endRaw = parseIsoDay(campaign.end_date)
+      if (!startRaw && !endRaw) return null
+      const startDate = startRaw || endRaw
+      const endDate = endRaw || startRaw
+      if (!startDate || !endDate) return null
+      const from = startDate.valueOf() <= endDate.valueOf() ? startDate : endDate
+      const to = startDate.valueOf() <= endDate.valueOf() ? endDate : startDate
+      return {
+        ...campaign,
+        startDate: from,
+        endDate: to,
+      }
+    })
+    .filter(Boolean)
+
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const validDates = items
+  const taskDates = items
     .map((row) => new Date(row.air_date))
     .filter((date) => !Number.isNaN(date.valueOf()))
-
-  const minSource = validDates.length > 0 ? new Date(Math.min(...validDates.map((d) => d.valueOf()), now.valueOf())) : now
-  const maxSource = validDates.length > 0 ? new Date(Math.max(...validDates.map((d) => d.valueOf()), now.valueOf())) : now
+  const datePool = [
+    now.valueOf(),
+    ...taskDates.map((date) => date.valueOf()),
+    ...campaignRanges.flatMap((campaign) => [campaign.startDate.valueOf(), campaign.endDate.valueOf()]),
+  ]
+  const minSource = new Date(Math.min(...datePool))
+  const maxSource = new Date(Math.max(...datePool))
 
   const startDate = new Date(minSource.getFullYear(), minSource.getMonth(), 1)
   const endDate = new Date(maxSource.getFullYear(), maxSource.getMonth() + 1, 0)
@@ -774,7 +1177,8 @@ const timeline = computed(() => {
   const mediaHeight = Math.round(176 * scale)
   const gridWidth = totalDays * dayWidth
   const createRowHeight = 54
-  const laneTopOffset = createRowHeight + 10
+  const campaignRowHeight = 40
+  const campaignTopOffset = createRowHeight + 6
   const todayIndex = clamp(Math.floor((todayStart.valueOf() - startDate.valueOf()) / msPerDay), 0, Math.max(totalDays - 1, 0))
 
   const days = Array.from({ length: totalDays }).map((_, index) => {
@@ -790,6 +1194,42 @@ const timeline = computed(() => {
       monthDay: new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date)
     }
   })
+
+  const campaignLaneEnd = []
+  const campaignBars = [...campaignRanges]
+    .sort((a, b) => a.startDate.valueOf() - b.startDate.valueOf())
+    .map((campaign) => {
+      const rawStart = Math.floor((campaign.startDate.valueOf() - startDate.valueOf()) / msPerDay)
+      const rawEnd = Math.floor((campaign.endDate.valueOf() - startDate.valueOf()) / msPerDay)
+      if (rawEnd < 0 || rawStart > totalDays - 1) return null
+
+      const startIndex = clamp(rawStart, 0, totalDays - 1)
+      const endIndex = clamp(rawEnd, 0, totalDays - 1)
+      const spanDays = Math.max(1, endIndex - startIndex + 1)
+
+      let lane = campaignLaneEnd.findIndex((value) => startIndex > value)
+      if (lane === -1) {
+        lane = campaignLaneEnd.length
+        campaignLaneEnd.push(-1)
+      }
+      campaignLaneEnd[lane] = endIndex
+
+      return {
+        id: campaign.id,
+        name: campaign.name,
+        status: campaign.status || 'planning',
+        icon: campaignTimelineIcon(campaign.status),
+        style: {
+          top: `${campaignTopOffset + lane * campaignRowHeight}px`,
+          left: `${startIndex * dayWidth + 10}px`,
+          width: `${Math.max(160, spanDays * dayWidth - 20)}px`,
+        }
+      }
+    })
+    .filter(Boolean)
+
+  const campaignSectionHeight = campaignBars.length > 0 ? campaignBars.length * campaignRowHeight + 8 : 0
+  const laneTopOffset = createRowHeight + campaignSectionHeight + 10
 
   const laneEnd = []
   const cards = [...items]
@@ -828,6 +1268,8 @@ const timeline = computed(() => {
 
   return {
     days,
+    campaignBars,
+    campaignRowHeight,
     cards,
     laneCount: Math.max(laneEnd.length, 1),
     dayWidth,
@@ -883,6 +1325,23 @@ function dashboardBasePath() {
   return window.location.pathname.startsWith('/dashboard') ? '/dashboard' : '/'
 }
 
+function openOverviewSection(targetId = null) {
+  activeView.value = 'overview'
+  window.history.pushState({}, '', dashboardBasePath())
+  if (!targetId) return
+  nextTick(() => {
+    const el = document.getElementById(targetId)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  })
+}
+
+function openCampaignsView() {
+  activeView.value = 'campaigns'
+  window.history.pushState({}, '', `${dashboardBasePath()}/campaigns`)
+}
+
 function toDateTimeInputFromIsoDay(dayIso, hour = 19, minute = 0) {
   const [y, m, d] = String(dayIso || '')
     .split('-')
@@ -910,6 +1369,7 @@ function resetDetailDraft(defaultStatus = 'idea') {
 }
 
 function openCreateInColumn(defaultStatus = 'idea') {
+  activeView.value = 'overview'
   createMode.value = true
   detailOpen.value = true
   selectedTask.value = null
@@ -930,6 +1390,7 @@ function openCreateForTimelineDay(dayIso) {
 async function openTask(taskId, push = true) {
   try {
     const task = await requestJson(`/tasks/${taskId}`)
+    activeView.value = 'overview'
     createMode.value = false
     selectedTask.value = task
     selectedTaskId.value = task.id
@@ -942,8 +1403,8 @@ async function openTask(taskId, push = true) {
     contentForm.caption = task.caption || ''
     contentForm.hashtags = (task.hashtags || []).join(' ')
     contentForm.mentions = (task.mentions || []).join(' ')
-    contentForm.assignee_name = summary?.assignee || ''
-    contentForm.campaign_name = summary?.campaign || ''
+    contentForm.assignee_name = task.assignee_name || summary?.assignee || ''
+    contentForm.campaign_name = task.campaign_name || summary?.campaign || ''
     contentForm.air_date = toInputDatetime(task.air_date)
 
     mediaForm.product_url = task.product_url || ''
@@ -1049,10 +1510,10 @@ async function handleSaveContent() {
       quick_note: normalizeQuickNote(contentForm.quick_note),
       caption: contentForm.caption,
       hashtags: parseSpaceList(contentForm.hashtags),
-      mentions: parseSpaceList(contentForm.mentions)
+      mentions: parseSpaceList(contentForm.mentions),
+      campaign_name: contentForm.campaign_name.trim()
     }
     if (contentForm.assignee_name.trim()) payload.assignee_name = contentForm.assignee_name.trim()
-    if (contentForm.campaign_name.trim()) payload.campaign_name = contentForm.campaign_name.trim()
     if (contentForm.air_date) payload.air_date = contentForm.air_date
 
     await requestJson(`/tasks/${selectedTaskId.value}?actor_name=${encodeURIComponent(actorName())}`, {
@@ -1060,7 +1521,8 @@ async function handleSaveContent() {
       body: payload
     })
     showToast('Content saved')
-    await refreshAndKeepDetail()
+    await loadDashboard()
+    closeDetail()
   } catch (error) {
     showToast(`Save failed (${error.message})`, true)
   }
@@ -1167,75 +1629,44 @@ async function handleRunReminders() {
   }
 }
 
-async function handleSeedDemo() {
-  const now = new Date()
-  const plusDays = (days, hour) => {
-    const date = new Date(now)
-    date.setDate(date.getDate() + days)
-    date.setHours(hour, 0, 0, 0)
-    return toInputDatetime(date)
-  }
-
-  const demoTasks = [
-    {
-      title: 'Demo Story Launch',
-      type: 'story',
-      status: 'idea',
-      air_date: plusDays(1, 19),
-      assignee_name: 'Linh',
-      campaign_name: 'SpringBrand',
-      hashtags: ['#spring', '#brand'],
-      media_urls: ['https://cdn.example.com/demo-story.jpg']
-    },
-    {
-      title: 'Demo Reel Product',
-      type: 'reel',
-      status: 'design',
-      air_date: plusDays(2, 19),
-      assignee_name: 'An',
-      campaign_name: 'ProductDrop',
-      caption: 'Product tease and CTA',
-      media_urls: ['https://cdn.example.com/demo-reel.mp4']
-    },
-    {
-      title: 'Demo Post Recap',
-      type: 'post',
-      status: 'ready',
-      air_date: plusDays(0, 19),
-      assignee_name: 'Ram',
-      campaign_name: 'WeeklyRecap',
-      caption: 'Recap highlights',
-      media_urls: ['https://cdn.example.com/demo-post.jpg']
-    }
-  ]
-
-  try {
-    for (const payload of demoTasks) {
-      await requestJson('/tasks', { method: 'POST', body: payload })
-    }
-    showToast('Demo tasks created')
-    await loadDashboard()
-  } catch (error) {
-    showToast(`Seed failed (${error.message})`, true)
-  }
-}
-
 function onDragStart(taskId) {
   draggingTaskId.value = taskId
 }
 
 function onDragEnd() {
   draggingTaskId.value = null
+  dragOverStatus.value = ''
+}
+
+function onDragEnterColumn(status) {
+  if (!draggingTaskId.value) return
+  dragOverStatus.value = status
+}
+
+function onDragLeaveColumn(status) {
+  if (dragOverStatus.value === status) {
+    dragOverStatus.value = ''
+  }
 }
 
 async function onDropToStatus(status) {
   if (!draggingTaskId.value) return
   const taskId = draggingTaskId.value
   draggingTaskId.value = null
+  dragOverStatus.value = ''
   await updateTaskStatus(taskId, status)
 }
 
 function openFromPath() {
+  if (/^\/dashboard\/campaigns\/?$/.test(window.location.pathname)) {
+    activeView.value = 'campaigns'
+    return
+  }
+  if (/^\/dashboard\/users\/?$/.test(window.location.pathname)) {
+    activeView.value = isAdmin.value ? 'users' : 'overview'
+    return
+  }
+  activeView.value = 'overview'
   const match = window.location.pathname.match(/^\/dashboard\/tasks\/([^/]+)$/)
   if (match) {
     openTask(match[1], false)
@@ -1252,6 +1683,7 @@ onMounted(async () => {
       const parsed = JSON.parse(rawAuth)
       auth.token = parsed.token || ''
       auth.user = parsed.user || null
+      syncProfileForm()
     } catch {
       clearAuthState()
     }
@@ -1300,8 +1732,8 @@ onUnmounted(() => {
       <div class="topo-overlay" aria-hidden="true"></div>
       <div class="login-card card-surface">
         <p class="eyebrow">Shared Auth</p>
-        <h1>Login with Etsy Account</h1>
-        <p class="subtle">Use the same credentials as Etsy Shop Manager.</p>
+        <h1>Login</h1>
+        <p class="subtle">Use Etsy account or local user credentials.</p>
         <form class="form-grid" @submit.prevent="login">
           <label class="field"><span>Username</span><input v-model="auth.username" type="text" autocomplete="username" /></label>
           <label class="field"><span>Password</span><input v-model="auth.password" type="password" autocomplete="current-password" /></label>
@@ -1321,21 +1753,26 @@ onUnmounted(() => {
           <span class="brand-text">Social Tasker</span>
         </div>
         <nav class="menu" aria-label="Main navigation">
-          <a class="menu-item active" href="/dashboard">Overview</a>
-          <a class="menu-item" href="#board">Kanban</a>
-          <a class="menu-item" href="#timeline">Calendar</a>
-          <a class="menu-item" href="#analytics">Analytics</a>
+          <button class="menu-item" :class="{ active: activeView === 'overview' }" type="button" @click="openOverviewSection()">Overview</button>
+          <button class="menu-item" type="button" @click="openOverviewSection('board')">Kanban</button>
+          <button class="menu-item" type="button" @click="openOverviewSection('timeline')">Calendar</button>
+          <button class="menu-item" type="button" @click="openOverviewSection('analytics')">Analytics</button>
+          <button class="menu-item" :class="{ active: activeView === 'campaigns' }" type="button" @click="openCampaignsView()">Campaigns</button>
+          <button v-if="isAdmin" class="menu-item" :class="{ active: activeView === 'users' }" type="button" @click="openUsersView()">Users</button>
         </nav>
         <div class="actions">
-          <button class="ghost-btn" type="button" @click="settingsOpen = true">Settings</button>
+          <button class="ghost-btn" type="button" @click="openProfileSettings">Settings</button>
           <button class="ghost-btn" type="button" @click="loadDashboard">Refresh</button>
           <button class="ghost-btn" type="button" @click="handleRunReminders">Run Reminders</button>
-          <button class="ghost-btn" type="button" @click="handleSeedDemo">Seed Demo</button>
           <button class="ghost-btn" type="button" @click="logout">Logout</button>
-          <span class="pill user-pill">{{ auth.user.username }} ({{ auth.user.role }})</span>
+          <span class="pill user-pill">
+            <img v-if="currentUserAvatar" class="pill-avatar" :src="currentUserAvatar" alt="" />
+            {{ auth.user.name || auth.user.username }} ({{ auth.user.role }})
+          </span>
         </div>
       </header>
 
+      <template v-if="activeView === 'overview'">
       <section class="hero card-surface">
         <div>
           <p class="eyebrow">Social Content Command Center</p>
@@ -1393,8 +1830,11 @@ onUnmounted(() => {
                 v-for="status in statusOrder"
                 :key="status"
                 class="kanban-col"
+                :class="{ 'drag-over': dragOverStatus === status }"
                 :data-status="status"
                 @dragover.prevent
+                @dragenter.prevent="onDragEnterColumn(status)"
+                @dragleave.self="onDragLeaveColumn(status)"
                 @drop="onDropToStatus(status)"
               >
                 <header>
@@ -1402,6 +1842,12 @@ onUnmounted(() => {
                   <span class="pill">{{ kanban[status]?.length || 0 }}</span>
                 </header>
                 <ul class="drop-zone">
+                  <li
+                    v-if="draggingTaskId && dragOverStatus === status"
+                    class="kanban-card drop-preview"
+                  >
+                    Drop here to move to {{ statusLabels[status] }}
+                  </li>
                   <li
                     v-for="task in kanban[status]"
                     :key="task.id"
@@ -1516,7 +1962,17 @@ onUnmounted(() => {
                       <button class="timeline-create-btn" type="button" @click.stop="openCreateForTimelineDay(day.iso)">+ Create</button>
                     </div>
                   </div>
-                  <template v-if="timeline.cards.length === 0">
+                  <div
+                    v-for="campaign in timeline.campaignBars"
+                    :key="`camp-${campaign.id}`"
+                    class="timeline-campaign-bar"
+                    :class="`status-${campaign.status}`"
+                    :style="campaign.style"
+                  >
+                    <span class="campaign-icon">{{ campaign.icon }}</span>
+                    <span class="campaign-name">{{ campaign.name }}</span>
+                  </div>
+                  <template v-if="timeline.cards.length === 0 && timeline.campaignBars.length === 0">
                     <p style="padding:16px">Set air_date to render roadmap bars.</p>
                   </template>
                   <div
@@ -1537,8 +1993,7 @@ onUnmounted(() => {
                         <span class="timeline-type-chip" :class="typeClass(task.type)">
                           {{ String(task.type || '').toUpperCase() || 'POST' }}
                         </span>
-                        <label v-if="!isTimelineThumbVisible(task.media_thumbnail)" class="timeline-card-color">
-                          <span>Note</span>
+                        <label v-if="!isTimelineThumbVisible(task.media_thumbnail)" class="timeline-card-color" title="Card color">
                           <input
                             :value="task.no_media_bg"
                             type="color"
@@ -1638,14 +2093,98 @@ onUnmounted(() => {
           </article>
         </aside>
       </section>
+      </template>
+
+      <section v-else-if="activeView === 'campaigns'" class="campaigns-page card-surface">
+        <div class="campaigns-head">
+          <div>
+            <p class="eyebrow">Workspace</p>
+            <h1>Campaigns</h1>
+            <p class="subtle">Manage campaign info and reuse it from task forms.</p>
+          </div>
+          <button class="primary-btn" type="button" @click="openCampaignCreate">Create Campaign</button>
+        </div>
+        <div class="campaign-grid">
+          <button class="campaign-create-card" type="button" @click="openCampaignCreate">
+            <span>+</span>
+            <strong>Create campaign</strong>
+          </button>
+          <article v-for="campaign in campaigns" :key="campaign.id" class="campaign-card">
+            <header class="campaign-card-head">
+              <div>
+                <h3>{{ campaign.name }}</h3>
+                <p class="subtle">{{ campaignDateRange(campaign) }}</p>
+              </div>
+              <span class="pill">{{ campaign.status || 'planning' }}</span>
+            </header>
+            <p class="campaign-card-description">{{ campaign.description || 'No description yet.' }}</p>
+            <div class="campaign-card-meta">
+              <span class="pill">{{ campaign.requires_product_url ? 'Product URL required' : 'Branding optional URL' }}</span>
+            </div>
+            <div class="campaign-card-actions">
+              <button class="ghost-btn" type="button" @click="openCampaignEdit(campaign)">Edit</button>
+              <button class="ghost-btn danger-btn" type="button" @click="removeCampaign(campaign.id)">Delete</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section v-else-if="activeView === 'users' && isAdmin" class="campaigns-page card-surface">
+        <div class="campaigns-head">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h1>User Management</h1>
+            <p class="subtle">Create users, set role, avatar and reset password for assignment.</p>
+          </div>
+        </div>
+        <form class="form-grid user-create-form" @submit.prevent="createManagedUser">
+          <label class="field"><span>Full name</span><input v-model="userEditor.name" type="text" /></label>
+          <label class="field"><span>Username</span><input v-model="userEditor.username" type="text" /></label>
+          <label class="field"><span>Role</span><input v-model="userEditor.role" type="text" placeholder="content / designer / admin" /></label>
+          <label class="field"><span>Password</span><input v-model="userEditor.password" type="password" /></label>
+          <label class="field full"><span>Avatar file (optional)</span><input type="file" accept="image/*" @change="onNewUserAvatarChange" /></label>
+          <div class="field actions-row full"><button class="primary-btn save-btn" type="submit">Add User</button></div>
+        </form>
+
+        <div class="list-shell">
+          <article v-for="row in userRows" :key="row.id" class="list-item user-row">
+            <img v-if="row.avatar_url" :src="row.avatar_url" alt="" class="avatar-preview" />
+            <div v-else class="avatar-preview avatar-preview-fallback">{{ (row.name || row.username || '?').slice(0, 1).toUpperCase() }}</div>
+            <div class="user-row-main">
+              <div class="user-row-grid">
+                <label class="field"><span>Name</span><input v-model="row.name" type="text" /></label>
+                <label class="field"><span>Username</span><input v-model="row.username" type="text" /></label>
+                <label class="field"><span>Role</span><input v-model="row.role" type="text" /></label>
+                <label class="field"><span>Avatar file</span><input type="file" accept="image/*" @change="onManagedUserAvatarChange(row.id, $event)" /></label>
+                <label class="field checkbox-field">
+                  <input v-model="row.is_active" type="checkbox" />
+                  <span>Active</span>
+                </label>
+                <label class="field">
+                  <span>Set password</span>
+                  <input v-model="row.temp_password" type="password" placeholder="new password" />
+                </label>
+              </div>
+              <div class="user-row-actions">
+                <button class="ghost-btn" type="button" @click="uploadManagedUserAvatar(row)">Upload Avatar</button>
+                <button class="ghost-btn save-btn" type="button" @click="saveManagedUser(row)">Save</button>
+                <button class="ghost-btn" type="button" @click="saveManagedUserPassword(row)">Set Password</button>
+                <button class="ghost-btn danger-btn" type="button" @click="removeManagedUser(row)">Delete</button>
+              </div>
+            </div>
+          </article>
+          <article v-if="!usersLoading && userRows.length === 0" class="list-item">
+            <p class="meta">No users yet.</p>
+          </article>
+        </div>
+      </section>
     </main>
 
     <section v-if="detailOpen" class="detail card-surface open">
       <div class="detail-head">
         <h2>{{ createMode ? 'Create Task' : selectedTask?.title }}</h2>
         <div class="detail-head-actions">
-          <button class="ghost-btn" type="button" @click="closeDetail">Close</button>
-          <button v-if="!createMode" class="ghost-btn" type="button" @click="handleDeleteTask">Delete</button>
+          <button v-if="!createMode" class="ghost-btn danger-btn" type="button" @click="handleDeleteTask">Delete</button>
         </div>
       </div>
 
@@ -1696,6 +2235,14 @@ onUnmounted(() => {
             ></textarea>
             <small class="field-counter">{{ (contentForm.quick_note || '').length }}/{{ QUICK_NOTE_MAX_LENGTH }}</small>
           </label>
+          <label v-if="!createMode && selectedTaskId" class="field">
+            <span>No-media card color</span>
+            <input
+              :value="getTaskNoMediaColor(selectedTaskId)"
+              type="color"
+              @input="setTaskNoMediaColor(selectedTaskId, $event.target.value)"
+            />
+          </label>
           <label class="field full"><span>Caption</span><textarea v-model="contentForm.caption" rows="7"></textarea></label>
           <label class="field"><span>Hashtags (space separated)</span><input v-model="contentForm.hashtags" type="text" /></label>
           <label class="field"><span>Mentions (space separated)</span><input v-model="contentForm.mentions" type="text" /></label>
@@ -1706,9 +2253,15 @@ onUnmounted(() => {
               <option v-for="name in assigneeOptions" :key="name" :value="name">{{ name }}</option>
             </select>
           </label>
-          <label class="field"><span>Campaign Name</span><input v-model="contentForm.campaign_name" type="text" /></label>
+          <label class="field">
+            <span>Campaign Name</span>
+            <select v-model="contentForm.campaign_name">
+              <option value="">No campaign</option>
+              <option v-for="campaign in campaignOptions" :key="campaign.id" :value="campaign.name">{{ campaign.name }}</option>
+            </select>
+          </label>
           <label class="field"><span>Air Date</span><input v-model="contentForm.air_date" type="datetime-local" /></label>
-          <div class="field actions-row"><button class="primary-btn" type="submit">{{ createMode ? 'Create Task' : 'Save Content' }}</button></div>
+          <div class="field actions-row"><button class="primary-btn" :class="{ 'save-btn': !createMode }" type="submit">{{ createMode ? 'Create Task' : 'Save Content' }}</button></div>
         </form>
       </div>
 
@@ -1760,7 +2313,7 @@ onUnmounted(() => {
       <div v-show="activeTab === 'checklist'" class="tab-panel active">
         <form class="form-grid" @submit.prevent="handleSaveChecklist">
           <label class="field full"><span>Checklist lines ([x] done or [ ] todo)</span><textarea v-model="checklistText" rows="7"></textarea></label>
-          <div class="field actions-row"><button class="primary-btn" type="submit">Save Checklist</button></div>
+          <div class="field actions-row"><button class="primary-btn save-btn" type="submit">Save Checklist</button></div>
         </form>
       </div>
 
@@ -1790,16 +2343,35 @@ onUnmounted(() => {
         </div>
       </div>
     </section>
+    <button
+      v-if="detailOpen"
+      class="ghost-btn close-x-btn detail-close-floating"
+      type="button"
+      aria-label="Close Task Popup"
+      title="Close"
+      @click="closeDetail"
+    >
+      X
+    </button>
 
     <div class="modal-backdrop" :class="{ open: notePreview.open }" :aria-hidden="notePreview.open ? 'false' : 'true'" @click="closeNotePreview">
       <section class="modal-card note-preview-card" role="dialog" aria-modal="true" aria-labelledby="notePreviewTitle" @click.stop>
         <header class="modal-head">
           <h3 id="notePreviewTitle">Quick Note</h3>
-          <button class="ghost-btn" type="button" @click="closeNotePreview">Close</button>
+          <button class="ghost-btn close-x-btn" type="button" aria-label="Close" title="Close" @click="closeNotePreview">X</button>
         </header>
         <p class="meta note-preview-meta">
           {{ notePreview.title }} · {{ notePreview.airDate ? fmtDate(notePreview.airDate) : 'No air date' }}
         </p>
+        <div v-if="notePreview.taskId" class="note-color-row">
+          <span class="meta">Card color</span>
+          <input
+            :value="notePreviewColor()"
+            class="note-color-input"
+            type="color"
+            @input="onNotePreviewColorChange($event.target.value)"
+          />
+        </div>
         <textarea
           v-model="notePreview.draft"
           class="note-preview-input"
@@ -1809,7 +2381,7 @@ onUnmounted(() => {
         ></textarea>
         <p class="meta note-preview-meta note-preview-counter">{{ (notePreview.draft || '').length }}/{{ QUICK_NOTE_MAX_LENGTH }}</p>
         <div class="note-preview-actions">
-          <button class="ghost-btn" type="button" :disabled="notePreview.saving" @click="saveNoteFromPreview">
+          <button class="primary-btn save-btn" type="button" :disabled="notePreview.saving" @click="saveNoteFromPreview">
             {{ notePreview.saving ? 'Saving...' : 'Save Note' }}
           </button>
           <button
@@ -1824,75 +2396,79 @@ onUnmounted(() => {
       </section>
     </div>
 
+    <div class="modal-backdrop" :class="{ open: campaignEditor.open }" :aria-hidden="campaignEditor.open ? 'false' : 'true'" @click="closeCampaignEditor">
+      <section class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="campaignEditorTitle" @click.stop>
+        <header class="modal-head">
+          <h3 id="campaignEditorTitle">{{ campaignEditor.editingId ? 'Edit campaign' : 'Create campaign' }}</h3>
+          <button class="ghost-btn close-x-btn" type="button" aria-label="Close" title="Close" @click="closeCampaignEditor">X</button>
+        </header>
+        <form class="form-grid" @submit.prevent="saveCampaign">
+          <label class="field full"><span>Campaign name</span><input v-model="campaignEditor.name" type="text" required /></label>
+          <label class="field">
+            <span>Status</span>
+            <select v-model="campaignEditor.status">
+              <option v-for="status in campaignStatusOptions" :key="status" :value="status">{{ status }}</option>
+            </select>
+          </label>
+          <label class="field"><span>Start date</span><input v-model="campaignEditor.start_date" type="date" /></label>
+          <label class="field"><span>End date</span><input v-model="campaignEditor.end_date" type="date" /></label>
+          <label class="field"><span>Link</span><input v-model="campaignEditor.link_url" type="url" placeholder="https://..." /></label>
+          <label class="field"><span>Brand</span><input v-model="campaignEditor.brand" type="text" /></label>
+          <label class="field"><span>Platform</span><input v-model="campaignEditor.platform" type="text" /></label>
+          <label class="field checkbox-field">
+            <input v-model="campaignEditor.requires_product_url" type="checkbox" />
+            <span>Require Product URL for tasks in this campaign</span>
+          </label>
+          <label class="field full"><span>Description</span><textarea v-model="campaignEditor.description" rows="6"></textarea></label>
+          <div class="field actions-row full">
+            <button class="primary-btn" :class="{ 'save-btn': Boolean(campaignEditor.editingId) }" type="submit" :disabled="campaignEditor.saving">
+              {{ campaignEditor.saving ? 'Saving...' : (campaignEditor.editingId ? 'Save campaign' : 'Create campaign') }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <div class="modal-backdrop" :class="{ open: settingsOpen }" :aria-hidden="settingsOpen ? 'false' : 'true'">
       <section class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" @click.stop>
         <header class="modal-head">
-          <h3 id="settingsTitle">Settings</h3>
-          <button class="ghost-btn" type="button" @click="settingsOpen = false">Close</button>
+          <h3 id="settingsTitle">Profile Settings</h3>
+          <button class="ghost-btn close-x-btn" type="button" aria-label="Close" title="Close" @click="settingsOpen = false">X</button>
         </header>
-        <div class="detail-tabs">
-          <button type="button" class="tab-btn" :class="{ active: settingsTab === 'collections' }" @click="settingsTab = 'collections'">Collections</button>
-          <button type="button" class="tab-btn" :class="{ active: settingsTab === 'hashtags' }" @click="settingsTab = 'hashtags'">Hashtags</button>
-          <button type="button" class="tab-btn" :class="{ active: settingsTab === 'sellers' }" @click="settingsTab = 'sellers'">Sellers</button>
-        </div>
 
-        <div v-show="settingsTab === 'collections'" class="tab-panel active">
-          <form class="form-grid" @submit.prevent="createCollection">
-            <label class="field"><span>Name</span><input v-model="collectionForm.name" type="text" /></label>
-            <label class="field"><span>Color</span><input v-model="collectionForm.color" type="text" placeholder="#ffce62" /></label>
-            <label class="field full"><span>Description</span><input v-model="collectionForm.description" type="text" /></label>
-            <div class="field actions-row full"><button class="primary-btn" type="submit">Add Collection</button></div>
-          </form>
-          <div class="list-shell">
-            <article v-for="collection in collections" :key="collection.id" class="list-item">
-              <strong>{{ collection.name }}</strong>
-              <p class="meta">{{ collection.description || 'No description' }}</p>
-              <button class="ghost-btn" type="button" @click="deleteCollection(collection.id)">Delete</button>
-            </article>
+        <form class="form-grid" @submit.prevent="saveProfile">
+          <div class="field full">
+            <span>Avatar</span>
+            <div class="profile-avatar-line">
+              <img v-if="profileForm.avatar_url" :src="profileForm.avatar_url" alt="" class="avatar-preview" />
+              <div v-else class="avatar-preview avatar-preview-fallback">{{ (profileForm.name || profileForm.username || '?').slice(0, 1).toUpperCase() }}</div>
+              <input type="file" accept="image/*" @change="onProfileAvatarChange" />
+              <button class="ghost-btn" type="button" :disabled="profileSaving" @click="uploadProfileAvatar">
+                {{ profileSaving ? 'Uploading...' : 'Upload Avatar' }}
+              </button>
+            </div>
           </div>
-        </div>
+          <label class="field"><span>Full name</span><input v-model="profileForm.name" type="text" /></label>
+          <label class="field"><span>Username</span><input v-model="profileForm.username" type="text" /></label>
+          <div class="field actions-row full">
+            <button class="primary-btn save-btn" type="submit" :disabled="profileSaving">
+              {{ profileSaving ? 'Saving...' : 'Save Profile' }}
+            </button>
+          </div>
+        </form>
 
-        <div v-show="settingsTab === 'hashtags'" class="tab-panel active">
-          <form class="form-grid" @submit.prevent="createHashtagGroup">
-            <label class="field"><span>Group name</span><input v-model="hashtagGroupForm.name" type="text" /></label>
-            <label class="field">
-              <span>Scope</span>
-              <select v-model="hashtagGroupForm.scope">
-                <option value="global">Global</option>
-                <option value="campaign">Campaign</option>
-                <option value="type">Type</option>
-              </select>
-            </label>
-            <div class="field actions-row full"><button class="primary-btn" type="submit">Add Group</button></div>
-          </form>
-          <form class="form-grid" @submit.prevent="createHashtag">
-            <label class="field">
-              <span>Group</span>
-              <select v-model="hashtagForm.group_id">
-                <option v-for="group in hashtagGroups" :key="group.id" :value="group.id">{{ group.name }}</option>
-              </select>
-            </label>
-            <label class="field"><span>Hashtag</span><input v-model="hashtagForm.tag" type="text" placeholder="#new" /></label>
-            <div class="field actions-row full"><button class="primary-btn" type="submit">Add Hashtag</button></div>
-          </form>
-          <div class="list-shell">
-            <article v-for="tag in hashtags" :key="tag.id" class="list-item">
-              <strong>{{ tag.tag }}</strong>
-              <p class="meta">Usage: {{ tag.usage_count }}</p>
-              <button class="ghost-btn" type="button" @click="deleteHashtag(tag.id)">Delete</button>
-            </article>
-          </div>
-        </div>
+        <div class="settings-divider"></div>
 
-        <div v-show="settingsTab === 'sellers'" class="tab-panel active">
-          <div class="list-shell">
-            <article v-for="seller in sellers" :key="seller.id" class="list-item">
-              <strong>{{ seller.username }}</strong>
-              <p class="meta">{{ seller.id }}</p>
-            </article>
-            <article v-if="sellers.length === 0" class="list-item"><p class="meta">No seller data from Etsy yet.</p></article>
+        <form class="form-grid" @submit.prevent="saveMyPassword">
+          <label class="field"><span>Current password (optional first set)</span><input v-model="passwordForm.current_password" type="password" /></label>
+          <label class="field"><span>New password</span><input v-model="passwordForm.new_password" type="password" minlength="6" /></label>
+          <label class="field full"><span>Confirm new password</span><input v-model="passwordForm.confirm_password" type="password" minlength="6" /></label>
+          <div class="field actions-row full">
+            <button class="primary-btn save-btn" type="submit" :disabled="passwordSaving">
+              {{ passwordSaving ? 'Saving...' : 'Change Password' }}
+            </button>
           </div>
-        </div>
+        </form>
       </section>
     </div>
 

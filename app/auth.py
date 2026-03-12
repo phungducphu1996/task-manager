@@ -22,14 +22,17 @@ class Principal:
     username: str
     role: str
     raw_claims: dict[str, Any]
+    source: str = "external"
+    name: str | None = None
+    avatar_url: str | None = None
 
     @property
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        return self.role.lower() == "admin"
 
     @property
     def is_seller(self) -> bool:
-        return self.role == "user"
+        return self.role.lower() in {"user", "seller"}
 
 
 def decode_etsy_jwt(token: str) -> Principal:
@@ -39,12 +42,58 @@ def decode_etsy_jwt(token: str) -> Principal:
 
     subject = str(claims.get("sub") or "").strip()
     username = str(claims.get("username") or "").strip()
-    role = str(claims.get("role") or "").strip().lower()
+    role = str(claims.get("role") or "").strip()
+    source = str(claims.get("source") or "external").strip() or "external"
+    name = str(claims.get("name") or "").strip() or None
+    avatar_url = str(claims.get("avatar_url") or "").strip() or None
 
-    if not subject or not username or role not in {"admin", "user"}:
+    if not subject or not username or not role:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token_claims")
 
-    return Principal(user_id=subject, username=username, role=role, raw_claims=claims)
+    return Principal(
+        user_id=subject,
+        username=username,
+        role=role,
+        raw_claims=claims,
+        source=source,
+        name=name,
+        avatar_url=avatar_url,
+    )
+
+
+def issue_local_jwt(
+    *,
+    user_id: str,
+    username: str,
+    role: str,
+    name: str | None = None,
+    avatar_url: str | None = None,
+    expires_in_seconds: int = 60 * 60 * 24 * 7,
+) -> str:
+    if not ETSY_JWT_SECRET:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="missing_etsy_jwt_secret")
+
+    now = int(time.time())
+    payload: dict[str, Any] = {
+        "sub": user_id,
+        "username": username,
+        "role": role,
+        "source": "local",
+        "iat": now,
+        "exp": now + max(300, int(expires_in_seconds)),
+    }
+    if name:
+        payload["name"] = name
+    if avatar_url:
+        payload["avatar_url"] = avatar_url
+
+    header = {"alg": ETSY_JWT_ALGORITHM, "typ": "JWT"}
+    header_b64 = _urlsafe_b64encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    payload_b64 = _urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    signature = hmac.new(ETSY_JWT_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    signature_b64 = _urlsafe_b64encode(signature)
+    return f"{header_b64}.{payload_b64}.{signature_b64}"
 
 
 def _decode_hs256_jwt(token: str, secret: str, expected_alg: str) -> dict[str, Any]:
@@ -86,6 +135,10 @@ def _decode_hs256_jwt(token: str, secret: str, expected_alg: str) -> dict[str, A
 def _urlsafe_b64decode(data: str) -> bytes:
     padding = "=" * ((4 - len(data) % 4) % 4)
     return base64.urlsafe_b64decode(data + padding)
+
+
+def _urlsafe_b64encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 
 
 def get_optional_principal(
