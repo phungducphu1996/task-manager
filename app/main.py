@@ -71,6 +71,7 @@ from app.services import (
     delete_user,
     delete_campaign,
     delete_collection,
+    delete_asset,
     delete_hashtag,
     delete_hashtag_group,
     delete_task,
@@ -736,6 +737,23 @@ def add_base64_assets_api(
     except ValueError as exc:
         if str(exc) == "task_not_found":
             raise HTTPException(status_code=404, detail="task_not_found")
+        raise HTTPException(status_code=400, detail=str(exc))
+    return task_to_response(task)
+
+
+@app.delete("/tasks/{task_id}/assets/{asset_id}", response_model=TaskOut)
+def delete_asset_api(
+    task_id: str,
+    asset_id: str,
+    actor_name: str | None = None,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_current_principal),
+):
+    try:
+        task = delete_asset(db, task_id, asset_id, _actor_name(actor_name, principal))
+    except ValueError as exc:
+        if str(exc) in {"task_not_found", "asset_not_found"}:
+            raise HTTPException(status_code=404, detail=str(exc))
         raise HTTPException(status_code=400, detail=str(exc))
     return task_to_response(task)
 

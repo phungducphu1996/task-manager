@@ -8,6 +8,7 @@ const DEFAULT_TIMELINE_NO_MEDIA_BG = '#f2f0e2'
 const DEFAULT_CAMPAIGN_COLOR = '#d8d2bc'
 const DEFAULT_CAMPAIGN_ICON = '📌'
 const QUICK_NOTE_MAX_LENGTH = 256
+const COMMENT_MEDIA_PREFIX = '[media]'
 const CAMPAIGN_COLOR_PRESETS = ['#3f5bd8', '#6a38c2', '#cb4295', '#ea6230', '#e59638', '#d9b743', '#59b058', '#59b6b8']
 const CAMPAIGN_ICON_PRESETS = ['📌', '🏃', '⭐', '💡', '📅', '🎁', '🎄', '🍎', '🎉', '🎯', '⚡', '❤️', '🏆', '🚀']
 const statusOrder = ['idea', 'design', 'ready', 'posted']
@@ -53,6 +54,7 @@ const assigneePickerRef = ref(null)
 const draggingTaskId = ref(null)
 const dragOverStatus = ref('')
 const detailPendingMedia = ref([])
+const commentPendingMedia = ref([])
 const failedTimelineThumbs = ref(new Set())
 const timelineViewportRef = ref(null)
 const timelinePrefs = reactive({
@@ -94,10 +96,6 @@ const contentForm = reactive({
   assignee_name: '',
   campaign_name: '',
   air_date: ''
-})
-
-const mediaForm = reactive({
-  product_url: ''
 })
 
 const checklistText = ref('')
@@ -237,6 +235,38 @@ function assigneeDisplay(value) {
   return String(value || '').trim() || 'Unassigned'
 }
 
+function assetFileName(url) {
+  const raw = String(url || '').trim()
+  if (!raw) return 'media-file'
+  try {
+    const pathname = new URL(raw, window.location.origin).pathname || ''
+    const base = pathname.split('/').pop() || raw
+    return decodeURIComponent(base) || 'media-file'
+  } catch {
+    const base = raw.split('/').pop() || raw
+    return base || 'media-file'
+  }
+}
+
+function commentAuthorName(comment) {
+  const userId = String(comment?.user_id || '').trim()
+  if (userId) {
+    const found = users.value.find((user) => String(user?.id || '') === userId)
+    if (found) {
+      return String(found.name || found.username || 'User')
+    }
+    return `User ${userId.slice(0, 6)}`
+  }
+  return 'User'
+}
+
+function commentAuthorAvatar(comment) {
+  const userId = String(comment?.user_id || '').trim()
+  if (!userId) return ''
+  const found = users.value.find((user) => String(user?.id || '') === userId)
+  return found?.avatar_url || ''
+}
+
 function fmtTime(value) {
   if (!value) return '--:--'
   const date = new Date(value)
@@ -340,6 +370,40 @@ function normalizeQuickNote(value) {
   const raw = String(value ?? '')
   if (!raw.trim()) return ''
   return raw.trim().slice(0, QUICK_NOTE_MAX_LENGTH)
+}
+
+function parseCommentContent(raw) {
+  const lines = String(raw || '').split('\n')
+  const textLines = []
+  const media = []
+  lines.forEach((line) => {
+    const trimmed = String(line || '').trim()
+    if (!trimmed) {
+      textLines.push('')
+      return
+    }
+    if (trimmed.startsWith(COMMENT_MEDIA_PREFIX)) {
+      const url = trimmed.slice(COMMENT_MEDIA_PREFIX.length).trim()
+      if (url) media.push(url)
+      return
+    }
+    textLines.push(line)
+  })
+  return {
+    text: textLines.join('\n').trim(),
+    media,
+  }
+}
+
+function commentDisplayText(comment) {
+  const parsed = parseCommentContent(comment?.content)
+  if (parsed.text) return parsed.text
+  if (parsed.media.length > 0) return 'Attached media'
+  return ''
+}
+
+function commentMediaUrls(comment) {
+  return parseCommentContent(comment?.content).media
 }
 
 function previewQuickNote(value, maxLength = 84) {
@@ -594,6 +658,11 @@ function onDetailMediaDrop(event) {
 
 function onDetailMediaPaste(event) {
   appendPendingMedia(event.clipboardData?.files, detailPendingMedia)
+}
+
+function onCommentMediaFilesChange(event) {
+  appendPendingMedia(event.target.files, commentPendingMedia)
+  event.target.value = ''
 }
 
 function showToast(message, isError = false) {
@@ -1256,6 +1325,10 @@ const selectedAssigneeUser = computed(() => {
   return assigneeUsers.value.find((user) => nameKey(user.name) === key) || null
 })
 
+const selectedTaskAssets = computed(() => {
+  return (selectedTask.value?.assets || []).filter((item) => !isDemoAssetUrl(item.url))
+})
+
 const campaignOptions = computed(() => {
   const rows = [...campaigns.value].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
   const current = contentForm.campaign_name.trim()
@@ -1529,12 +1602,12 @@ function resetDetailDraft(defaultStatus = 'idea') {
   contentForm.assignee_name = ''
   contentForm.campaign_name = ''
   contentForm.air_date = ''
-  mediaForm.product_url = ''
   checklistText.value = ''
   commentText.value = ''
   statusValue.value = statusOrder.includes(defaultStatus) ? defaultStatus : 'idea'
   createType.value = 'story'
   clearPendingMedia(detailPendingMedia)
+  clearPendingMedia(commentPendingMedia)
 }
 
 function openCreateInColumn(defaultStatus = 'idea') {
@@ -1576,8 +1649,8 @@ async function openTask(taskId, push = true) {
     contentForm.campaign_name = task.campaign_name || summary?.campaign || ''
     contentForm.air_date = toInputDatetime(task.air_date)
 
-    mediaForm.product_url = task.product_url || ''
     clearPendingMedia(detailPendingMedia)
+    clearPendingMedia(commentPendingMedia)
 
     checklistText.value = (task.checklist_items || [])
       .slice()
@@ -1604,6 +1677,7 @@ function closeDetail() {
   selectedTaskId.value = null
   closeNotePreview()
   clearPendingMedia(detailPendingMedia)
+  clearPendingMedia(commentPendingMedia)
   window.history.pushState({}, '', dashboardBasePath())
 }
 
@@ -1651,7 +1725,6 @@ async function handleCreateFromDetail() {
     caption: contentForm.caption.trim() || null,
     hashtags: parseSpaceList(contentForm.hashtags),
     mentions: parseSpaceList(contentForm.mentions),
-    product_url: mediaForm.product_url.trim() || null,
     checklist: parseChecklistLines(checklistText.value),
   }
 
@@ -1700,36 +1773,45 @@ async function handleSaveContent() {
 
 async function handleAttachMedia() {
   if (createMode.value) {
-    if (detailPendingMedia.value.length === 0 && !mediaForm.product_url.trim()) {
-      showToast('Add media files or product URL first', true)
+    if (detailPendingMedia.value.length === 0) {
+      showToast('Add media files first', true)
       return
     }
     showToast('Media is queued. Click Save Content to create task.')
     return
   }
   if (!selectedTaskId.value) return
-  const productUrl = mediaForm.product_url.trim()
   const pendingFiles = detailPendingMedia.value
-  if (!productUrl && pendingFiles.length === 0) {
-    showToast('Add media files or product URL first', true)
+  if (pendingFiles.length === 0) {
+    showToast('Add media files first', true)
     return
   }
   try {
-    if (productUrl) {
-      await requestJson(`/tasks/${selectedTaskId.value}?actor_name=${encodeURIComponent(actorName())}`, {
-        method: 'PATCH',
-        body: { product_url: productUrl }
-      })
-    }
     if (pendingFiles.length > 0) {
       await uploadPendingMedia(selectedTaskId.value, pendingFiles, actorName())
     }
     clearPendingMedia(detailPendingMedia)
-    showToast('Media/Product updated')
+    showToast('Media updated')
     await refreshAndKeepDetail()
     activeTab.value = 'media'
   } catch (error) {
     showToast(`Attach failed (${error.message})`, true)
+  }
+}
+
+async function handleDeleteAsset(assetId) {
+  if (!selectedTaskId.value) return
+  if (!assetId) return
+  if (!window.confirm('Delete this media file?')) return
+  try {
+    await requestJson(`/tasks/${selectedTaskId.value}/assets/${assetId}?actor_name=${encodeURIComponent(actorName())}`, {
+      method: 'DELETE'
+    })
+    showToast('Media deleted')
+    await refreshAndKeepDetail()
+    activeTab.value = 'media'
+  } catch (error) {
+    showToast(`Delete media failed (${error.message})`, true)
   }
 }
 
@@ -1756,14 +1838,31 @@ async function handleAddComment() {
   if (createMode.value) return
   if (!selectedTaskId.value) return
   const content = commentText.value.trim()
-  if (!content) return
+  const pendingFiles = commentPendingMedia.value
+  if (!content && pendingFiles.length === 0) return
   try {
+    let mediaLines = []
+    if (pendingFiles.length > 0) {
+      const beforeIds = new Set((selectedTask.value?.assets || []).map((asset) => asset.id))
+      const updatedTask = await uploadPendingMedia(selectedTaskId.value, pendingFiles, actorName())
+      const freshAssets = (updatedTask?.assets || []).filter((asset) => !beforeIds.has(asset.id))
+      mediaLines = freshAssets
+        .map((asset) => String(asset.url || '').trim())
+        .filter(Boolean)
+        .map((url) => `${COMMENT_MEDIA_PREFIX}${url}`)
+      clearPendingMedia(commentPendingMedia)
+    }
+    const composed = [content, ...mediaLines].filter(Boolean).join('\n').trim()
+    if (!composed) {
+      showToast('Nothing to send', true)
+      return
+    }
     await requestJson(`/tasks/${selectedTaskId.value}/comments`, {
       method: 'POST',
-      body: { content, user_name: actorName() }
+      body: { content: composed, user_name: actorName() }
     })
     commentText.value = ''
-    showToast('Comment added')
+    showToast('Comment saved')
     await refreshAndKeepDetail()
     activeTab.value = 'comments'
   } catch (error) {
@@ -1903,6 +2002,7 @@ onUnmounted(() => {
   window.removeEventListener('pointerdown', handlePointerDown)
   window.removeEventListener('popstate', openFromPath)
   clearPendingMedia(detailPendingMedia)
+  clearPendingMedia(commentPendingMedia)
   endTimelinePan()
 })
 </script>
@@ -1943,7 +2043,6 @@ onUnmounted(() => {
         </nav>
         <div class="actions">
           <button class="ghost-btn" type="button" @click="openProfileSettings">Settings</button>
-          <button class="ghost-btn" type="button" @click="loadDashboard">Refresh</button>
           <button class="ghost-btn" type="button" @click="handleRunReminders">Run Reminders</button>
           <button class="ghost-btn" type="button" @click="logout">Logout</button>
           <span class="pill user-pill">
@@ -2417,7 +2516,15 @@ onUnmounted(() => {
       <div class="detail-head">
         <h2>{{ createMode ? 'Create Task' : selectedTask?.title }}</h2>
         <div class="detail-head-actions">
-          <button v-if="!createMode" class="ghost-btn danger-btn" type="button" @click="handleDeleteTask">Delete</button>
+          <button
+            class="ghost-btn close-x-btn"
+            type="button"
+            aria-label="Close Task Popup"
+            title="Close"
+            @click="closeDetail"
+          >
+            X
+          </button>
         </div>
       </div>
 
@@ -2439,12 +2546,16 @@ onUnmounted(() => {
         <p class="subtle">
           {{ createMode
             ? `${String(createType || '').toUpperCase()} · ${contentForm.air_date ? fmtDate(contentForm.air_date) : 'No air date'}`
-            : `${String(selectedTask?.type || '').toUpperCase()} · ${fmtDate(selectedTask?.air_date)} · ${
-                (selectedTask?.validate?.missing_fields || []).length > 0
-                  ? `Missing: ${(selectedTask?.validate?.missing_fields || []).join(', ')}`
-                  : 'Ready for full package.'
-              }` }}
+            : `${String(selectedTask?.type || '').toUpperCase()} · ${fmtDate(selectedTask?.air_date)} · ${statusLabels[selectedTask?.status] || selectedTask?.status || ''}` }}
         </p>
+        <label v-if="!createMode && selectedTaskId" class="status-combo detail-no-media-color">
+          <span>No-media color</span>
+          <input
+            :value="getTaskNoMediaColor(selectedTaskId)"
+            type="color"
+            @input="setTaskNoMediaColor(selectedTaskId, $event.target.value)"
+          />
+        </label>
       </div>
 
       <div class="detail-tabs">
@@ -2467,14 +2578,6 @@ onUnmounted(() => {
               placeholder="Write short context for the card"
             ></textarea>
             <small class="field-counter">{{ (contentForm.quick_note || '').length }}/{{ QUICK_NOTE_MAX_LENGTH }}</small>
-          </label>
-          <label v-if="!createMode && selectedTaskId" class="field">
-            <span>No-media card color</span>
-            <input
-              :value="getTaskNoMediaColor(selectedTaskId)"
-              type="color"
-              @input="setTaskNoMediaColor(selectedTaskId, $event.target.value)"
-            />
           </label>
           <label class="field full"><span>Caption</span><textarea v-model="contentForm.caption" rows="7"></textarea></label>
           <label class="field"><span>Hashtags (space separated)</span><input v-model="contentForm.hashtags" type="text" /></label>
@@ -2572,7 +2675,6 @@ onUnmounted(() => {
 
       <div v-show="activeTab === 'media'" class="tab-panel active">
         <form class="form-grid" @submit.prevent="handleAttachMedia">
-          <label class="field full"><span>Product URL</span><input v-model="mediaForm.product_url" type="url" /></label>
           <label class="field full">
             <span>Quick upload (drag/drop/paste or choose files)</span>
             <div
@@ -2600,16 +2702,38 @@ onUnmounted(() => {
               <p class="meta">No pending files.</p>
             </article>
           </div>
-          <div class="field actions-row"><button class="primary-btn" type="submit">Attach Media</button></div>
+          <div class="field actions-row full centered-attach-row">
+            <button class="primary-btn attach-media-btn" type="submit">Attach Media</button>
+          </div>
         </form>
         <div v-if="!createMode" class="list-shell">
-          <article v-for="asset in (selectedTask?.assets || []).filter((item) => !isDemoAssetUrl(item.url))" :key="asset.id" class="list-item">
-            <img v-if="asset.kind === 'image'" :src="asset.url" alt="" class="asset-thumb" />
-            <video v-else :src="asset.url" class="asset-thumb" controls preload="metadata"></video>
-            <strong>{{ String(asset.kind || '').toUpperCase() }}</strong>
-            <p class="meta">{{ asset.url }}</p>
-          </article>
-          <article v-if="(selectedTask?.assets || []).filter((item) => !isDemoAssetUrl(item.url)).length === 0" class="list-item">
+          <div v-if="selectedTaskAssets.length > 0" class="attachments-table">
+            <header class="attachments-head">
+              <strong>Attachments</strong>
+              <span class="meta">{{ selectedTaskAssets.length }} item(s)</span>
+            </header>
+            <div class="attachments-grid-head">
+              <span>Name</span>
+              <span>Type</span>
+              <span>Date added</span>
+              <span>Actions</span>
+            </div>
+            <article v-for="asset in selectedTaskAssets" :key="asset.id" class="attachments-row">
+              <div class="attachments-name">
+                <img v-if="asset.kind === 'image'" :src="asset.url" alt="" class="attachments-thumb" />
+                <video v-else :src="asset.url" class="attachments-thumb" muted preload="metadata"></video>
+                <span class="attachments-file" :title="assetFileName(asset.url)">{{ assetFileName(asset.url) }}</span>
+              </div>
+              <span class="attachments-type">{{ String(asset.kind || '').toUpperCase() }}</span>
+              <span class="attachments-date">{{ fmtDate(asset.created_at) }}</span>
+              <span class="attachments-actions">
+                <a class="tiny-btn" :href="asset.url" target="_blank" rel="noopener noreferrer">View</a>
+                <a class="tiny-btn" :href="asset.url" :download="assetFileName(asset.url)">Save</a>
+                <button class="tiny-btn danger-btn media-delete-btn" type="button" @click="handleDeleteAsset(asset.id)">Delete</button>
+              </span>
+            </article>
+          </div>
+          <article v-else class="list-item">
             <p class="meta">No real media attached yet. Upload files to see preview.</p>
           </article>
         </div>
@@ -2625,12 +2749,63 @@ onUnmounted(() => {
       <div v-if="!createMode" v-show="activeTab === 'comments'" class="tab-panel active">
         <form class="inline-form" @submit.prevent="handleAddComment">
           <input v-model="commentText" type="text" placeholder="Write comment..." />
-          <button class="primary-btn" type="submit">Send</button>
+          <button class="primary-btn" type="submit">{{ commentPendingMedia.length > 0 ? 'Send + Attach' : 'Send' }}</button>
         </form>
+        <div class="comment-media-tools">
+          <input type="file" multiple accept="image/*,video/*" @change="onCommentMediaFilesChange" />
+          <button
+            v-if="commentPendingMedia.length > 0"
+            class="ghost-btn"
+            type="button"
+            @click="clearPendingMedia(commentPendingMedia)"
+          >
+            Clear pending
+          </button>
+        </div>
+        <div v-if="commentPendingMedia.length > 0" class="upload-preview-list comment-upload-preview">
+          <article v-for="item in commentPendingMedia" :key="item.id" class="upload-preview-item">
+            <img v-if="item.kind === 'image'" :src="item.preview_url" alt="" class="upload-preview-thumb" />
+            <video v-else :src="item.preview_url" class="upload-preview-thumb" muted playsinline></video>
+            <div>
+              <strong>{{ item.file.name }}</strong>
+              <p class="meta">{{ Math.ceil(item.file.size / 1024) }} KB</p>
+            </div>
+            <button class="ghost-btn" type="button" @click="removePendingMedia(commentPendingMedia, item.id)">Remove</button>
+          </article>
+        </div>
         <div class="list-shell">
-          <article v-for="comment in (selectedTask?.comments || []).slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at))" :key="comment.id" class="list-item">
-            <strong>{{ comment.user_id || 'User' }}</strong>
-            <p>{{ comment.content }}</p>
+          <article
+            v-for="comment in (selectedTask?.comments || []).slice().sort((a,b)=>new Date(a.created_at)-new Date(b.created_at))"
+            :key="comment.id"
+            class="list-item comment-item"
+          >
+            <div class="comment-head">
+              <span class="task-assignee-badge comment-avatar">
+                <img v-if="commentAuthorAvatar(comment)" class="task-assignee-avatar" :src="commentAuthorAvatar(comment)" alt="" />
+                <span
+                  v-else
+                  class="task-assignee-fallback"
+                  :style="{ background: assigneeAvatarColor(commentAuthorName(comment)) }"
+                >
+                  {{ assigneeInitials(commentAuthorName(comment)) }}
+                </span>
+              </span>
+              <strong>{{ commentAuthorName(comment) }}</strong>
+            </div>
+            <p v-if="commentDisplayText(comment)" class="comment-text">{{ commentDisplayText(comment) }}</p>
+            <div v-if="commentMediaUrls(comment).length > 0" class="comment-media-grid">
+              <a
+                v-for="url in commentMediaUrls(comment)"
+                :key="`${comment.id}-${url}`"
+                class="comment-media-item"
+                :href="url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <img v-if="isLikelyImage(url)" :src="url" alt="" class="comment-media-thumb" />
+                <video v-else :src="url" class="comment-media-thumb" muted playsinline preload="metadata"></video>
+              </a>
+            </div>
             <p class="meta">{{ fmtDate(comment.created_at) }}</p>
           </article>
         </div>
@@ -2647,17 +2822,10 @@ onUnmounted(() => {
           </article>
         </div>
       </div>
+      <div v-if="!createMode" class="detail-footer-actions">
+        <button class="ghost-btn danger-btn" type="button" @click="handleDeleteTask">Delete</button>
+      </div>
     </section>
-    <button
-      v-if="detailOpen"
-      class="ghost-btn close-x-btn detail-close-floating"
-      type="button"
-      aria-label="Close Task Popup"
-      title="Close"
-      @click="closeDetail"
-    >
-      X
-    </button>
 
     <div class="modal-backdrop" :class="{ open: notePreview.open }" :aria-hidden="notePreview.open ? 'false' : 'true'" @click="closeNotePreview">
       <section class="modal-card note-preview-card" role="dialog" aria-modal="true" aria-labelledby="notePreviewTitle" @click.stop>

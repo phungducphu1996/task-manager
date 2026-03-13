@@ -850,6 +850,43 @@ def add_base64_assets(
     return get_task_by_id(db, task.id)
 
 
+def delete_asset(
+    db: Session,
+    task_id: str,
+    asset_id: str,
+    actor_name: str | None = None,
+) -> SocialTask:
+    task = get_task_by_id(db, task_id)
+    actor = get_or_create_user(db, actor_name) if actor_name else None
+    actor_id = actor.id if actor else None
+
+    asset = next((item for item in task.assets if item.id == asset_id), None)
+    if not asset:
+        raise ValueError("asset_not_found")
+
+    storage_path = str(asset.storage_path or "").strip()
+    if storage_path:
+        path = Path(storage_path)
+        if path.exists() and path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    old_url = asset.url
+    db.delete(asset)
+    log_activity(
+        db,
+        task.id,
+        action="asset_deleted",
+        actor_id=actor_id,
+        field_name="asset",
+        old_value=old_url,
+    )
+    db.commit()
+    return get_task_by_id(db, task.id)
+
+
 def add_comment(
     db: Session,
     task_id: str,
