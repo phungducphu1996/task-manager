@@ -5,7 +5,11 @@ const AUTH_STORAGE_KEY = 'social_shared_auth'
 const TIMELINE_PREFS_KEY = 'social_timeline_prefs_v1'
 const TASK_NO_MEDIA_COLORS_KEY = 'social_timeline_task_no_media_colors_v1'
 const DEFAULT_TIMELINE_NO_MEDIA_BG = '#f2f0e2'
+const DEFAULT_CAMPAIGN_COLOR = '#d8d2bc'
+const DEFAULT_CAMPAIGN_ICON = '📌'
 const QUICK_NOTE_MAX_LENGTH = 256
+const CAMPAIGN_COLOR_PRESETS = ['#3f5bd8', '#6a38c2', '#cb4295', '#ea6230', '#e59638', '#d9b743', '#59b058', '#59b6b8']
+const CAMPAIGN_ICON_PRESETS = ['📌', '🏃', '⭐', '💡', '📅', '🎁', '🎄', '🍎', '🎉', '🎯', '⚡', '❤️', '🏆', '🚀']
 const statusOrder = ['idea', 'design', 'ready', 'posted']
 const statusLabels = {
   idea: 'Idea',
@@ -34,8 +38,7 @@ const auth = reactive({
 const visibleFields = reactive({
   type: true,
   airDate: true,
-  assignee: true,
-  missing: true
+  assignee: true
 })
 
 const detailOpen = ref(false)
@@ -44,6 +47,8 @@ const selectedTaskId = ref(null)
 const activeTab = ref('content')
 const createMode = ref(false)
 const createType = ref('story')
+const assigneePickerOpen = ref(false)
+const assigneePickerRef = ref(null)
 
 const draggingTaskId = ref(null)
 const dragOverStatus = ref('')
@@ -110,6 +115,8 @@ const campaignEditor = reactive({
   end_date: '',
   link_url: '',
   description: '',
+  color: DEFAULT_CAMPAIGN_COLOR,
+  icon: DEFAULT_CAMPAIGN_ICON,
   requires_product_url: false,
   brand: '',
   platform: ''
@@ -187,6 +194,47 @@ function fmtDate(value, withTime = true) {
     ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
     : { month: 'short', day: 'numeric', year: 'numeric' }
   return new Intl.DateTimeFormat('en-US', options).format(date)
+}
+
+function nameKey(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function findUserByAssignee(value) {
+  const key = nameKey(value)
+  if (!key) return null
+  return users.value.find((user) => {
+    const nameMatch = nameKey(user.name) === key
+    const usernameMatch = nameKey(user.username) === key
+    return nameMatch || usernameMatch
+  }) || null
+}
+
+function assigneeAvatarUrl(value) {
+  return findUserByAssignee(value)?.avatar_url || ''
+}
+
+function assigneeInitials(value) {
+  const clean = String(value || '').trim()
+  if (!clean) return 'U'
+  const words = clean.split(/\s+/).filter(Boolean)
+  if (words.length === 1) return words[0].slice(0, 1).toUpperCase()
+  return `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase()
+}
+
+function assigneeAvatarColor(value) {
+  const palette = ['#e1582f', '#2d9fbc', '#6351c6', '#17a964', '#e4a327', '#d35a83']
+  const key = nameKey(value)
+  if (!key) return '#7e7a6f'
+  let hash = 0
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) % 2147483647
+  }
+  return palette[Math.abs(hash) % palette.length]
+}
+
+function assigneeDisplay(value) {
+  return String(value || '').trim() || 'Unassigned'
 }
 
 function fmtTime(value) {
@@ -277,6 +325,15 @@ function clamp(value, min, max) {
 function sanitizeHexColor(value, fallback = DEFAULT_TIMELINE_NO_MEDIA_BG) {
   const raw = String(value || '').trim()
   return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw.toLowerCase() : fallback
+}
+
+function sanitizeCampaignColor(value, fallback = DEFAULT_CAMPAIGN_COLOR) {
+  return sanitizeHexColor(value, fallback)
+}
+
+function normalizeCampaignIcon(value, fallback = DEFAULT_CAMPAIGN_ICON) {
+  const clean = String(value || '').trim()
+  return clean || fallback
 }
 
 function normalizeQuickNote(value) {
@@ -423,10 +480,19 @@ function onNotePreviewColorChange(color) {
 
 function focusTimelineToToday() {
   const viewport = timelineViewportRef.value
-  if (!viewport || timeline.value.totalDays <= 0) return
+  if (!viewport || timeline.value.totalDays <= 0 || viewport.clientWidth <= 0) return false
   const index = clamp(Number(timeline.value.todayIndex || 0), 0, Math.max(timeline.value.totalDays - 1, 0))
   const centered = index * timeline.value.dayWidth - Math.max(0, Math.round((viewport.clientWidth - timeline.value.dayWidth) / 2))
   viewport.scrollLeft = Math.max(0, centered)
+  return true
+}
+
+function tryAutoFocusTimeline() {
+  if (timelineAutoFocusDone.value) return
+  nextTick(() => {
+    if (timelineAutoFocusDone.value) return
+    timelineAutoFocusDone.value = focusTimelineToToday()
+  })
 }
 
 function startTimelinePan(event) {
@@ -692,6 +758,31 @@ function onManagedUserAvatarChange(userId, event) {
   rowAvatarFiles[userId] = file
 }
 
+function toggleAssigneePicker() {
+  assigneePickerOpen.value = !assigneePickerOpen.value
+}
+
+function closeAssigneePicker() {
+  assigneePickerOpen.value = false
+}
+
+function chooseAssignee(value) {
+  contentForm.assignee_name = String(value || '').trim()
+  assigneePickerOpen.value = false
+}
+
+function assignToMe() {
+  chooseAssignee(auth.user?.name || auth.user?.username || '')
+}
+
+function handlePointerDown(event) {
+  if (!assigneePickerOpen.value) return
+  const root = assigneePickerRef.value
+  if (root && !root.contains(event.target)) {
+    assigneePickerOpen.value = false
+  }
+}
+
 async function loadCampaigns() {
   if (!auth.token) return
   try {
@@ -854,6 +945,8 @@ function resetCampaignEditor() {
   campaignEditor.end_date = ''
   campaignEditor.link_url = ''
   campaignEditor.description = ''
+  campaignEditor.color = DEFAULT_CAMPAIGN_COLOR
+  campaignEditor.icon = DEFAULT_CAMPAIGN_ICON
   campaignEditor.requires_product_url = false
   campaignEditor.brand = ''
   campaignEditor.platform = ''
@@ -872,6 +965,8 @@ function openCampaignEdit(campaign) {
   campaignEditor.end_date = campaign?.end_date || ''
   campaignEditor.link_url = campaign?.link_url || ''
   campaignEditor.description = campaign?.description || ''
+  campaignEditor.color = sanitizeCampaignColor(campaign?.color, DEFAULT_CAMPAIGN_COLOR)
+  campaignEditor.icon = normalizeCampaignIcon(campaign?.icon, DEFAULT_CAMPAIGN_ICON)
   campaignEditor.requires_product_url = Boolean(campaign?.requires_product_url)
   campaignEditor.brand = campaign?.brand || ''
   campaignEditor.platform = campaign?.platform || ''
@@ -896,6 +991,8 @@ async function saveCampaign() {
     end_date: campaignEditor.end_date || null,
     link_url: campaignEditor.link_url.trim() || null,
     description: campaignEditor.description.trim() || null,
+    color: sanitizeCampaignColor(campaignEditor.color),
+    icon: normalizeCampaignIcon(campaignEditor.icon),
     requires_product_url: Boolean(campaignEditor.requires_product_url),
     brand: campaignEditor.brand.trim() || null,
     platform: campaignEditor.platform.trim() || null
@@ -947,12 +1044,8 @@ function campaignDateRange(campaign) {
 async function bootstrapAfterAuth() {
   await loadProfile()
   await Promise.all([loadDashboard(), loadCampaigns(), loadUsers(isAdmin.value)])
-  if (!timelineAutoFocusDone.value) {
-    await nextTick()
-    focusTimelineToToday()
-    timelineAutoFocusDone.value = true
-  }
   openFromPath()
+  tryAutoFocusTimeline()
 }
 
 function openUsersView() {
@@ -1112,16 +1205,48 @@ const todayItems = computed(() => {
   return calendarTasks.value.filter((task) => onlyDateKey(task.air_date) === todayKey)
 })
 
-const assigneeOptions = computed(() => {
-  const options = new Set()
+const assigneeUsers = computed(() => {
+  const map = new Map()
   users.value.forEach((user) => {
-    if (user.is_active && user.name) options.add(user.name)
+    if (!user?.is_active) return
+    const displayName = String(user.name || user.username || '').trim()
+    if (!displayName) return
+    map.set(nameKey(displayName), {
+      id: user.id || `user-${displayName}`,
+      name: displayName,
+      avatar_url: user.avatar_url || ''
+    })
   })
   flatTasks.value.forEach((task) => {
-    if (task.assignee) options.add(task.assignee)
+    const displayName = String(task.assignee || '').trim()
+    if (!displayName) return
+    const key = nameKey(displayName)
+    if (!map.has(key)) {
+      map.set(key, {
+        id: `task-${displayName}`,
+        name: displayName,
+        avatar_url: assigneeAvatarUrl(displayName)
+      })
+    }
   })
-  if (contentForm.assignee_name) options.add(contentForm.assignee_name)
-  return [...options].sort((a, b) => a.localeCompare(b))
+  if (contentForm.assignee_name) {
+    const displayName = contentForm.assignee_name.trim()
+    const key = nameKey(displayName)
+    if (displayName && !map.has(key)) {
+      map.set(key, {
+        id: `current-${displayName}`,
+        name: displayName,
+        avatar_url: assigneeAvatarUrl(displayName)
+      })
+    }
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+})
+
+const selectedAssigneeUser = computed(() => {
+  const key = nameKey(contentForm.assignee_name)
+  if (!key) return null
+  return assigneeUsers.value.find((user) => nameKey(user.name) === key) || null
 })
 
 const campaignOptions = computed(() => {
@@ -1132,6 +1257,44 @@ const campaignOptions = computed(() => {
   }
   return rows
 })
+
+const campaignByName = computed(() => {
+  const map = new Map()
+  campaigns.value.forEach((campaign) => {
+    const key = nameKey(campaign?.name)
+    if (!key) return
+    map.set(key, campaign)
+  })
+  return map
+})
+
+function campaignThemeByName(campaignName) {
+  const key = nameKey(campaignName)
+  if (!key) return null
+  const found = campaignByName.value.get(key)
+  if (!found) return null
+  return {
+    color: sanitizeCampaignColor(found.color),
+    icon: normalizeCampaignIcon(found.icon),
+    name: found.name || campaignName
+  }
+}
+
+function campaignThemeFromTask(task) {
+  if (!task?.campaign) return null
+  const byName = campaignThemeByName(task.campaign)
+  return {
+    name: task.campaign,
+    color: sanitizeCampaignColor(task.campaign_color || byName?.color || DEFAULT_CAMPAIGN_COLOR),
+    icon: normalizeCampaignIcon(task.campaign_icon || byName?.icon || DEFAULT_CAMPAIGN_ICON)
+  }
+}
+
+function campaignAccentStyle(task) {
+  const theme = campaignThemeFromTask(task)
+  if (!theme) return {}
+  return { '--campaign-color': theme.color }
+}
 
 const timeline = computed(() => {
   const items = calendarTasks.value.filter((row) => row.air_date)
@@ -1218,11 +1381,13 @@ const timeline = computed(() => {
         id: campaign.id,
         name: campaign.name,
         status: campaign.status || 'planning',
-        icon: campaignTimelineIcon(campaign.status),
+        icon: normalizeCampaignIcon(campaign.icon, campaignTimelineIcon(campaign.status)),
+        color: sanitizeCampaignColor(campaign.color, DEFAULT_CAMPAIGN_COLOR),
         style: {
           top: `${campaignTopOffset + lane * campaignRowHeight}px`,
           left: `${startIndex * dayWidth + 10}px`,
           width: `${Math.max(160, spanDays * dayWidth - 20)}px`,
+          '--campaign-color': sanitizeCampaignColor(campaign.color, DEFAULT_CAMPAIGN_COLOR),
         }
       }
     })
@@ -1293,12 +1458,9 @@ function typeClass(type) {
 }
 
 function cardBadges(task) {
-  const missing = Number(task.missing_count || 0)
   const badges = []
   if (visibleFields.type) badges.push({ text: String(task.type || '').toUpperCase(), className: typeClass(task.type) })
   if (visibleFields.airDate) badges.push({ text: `📅 ${fmtDate(task.air_date, false)}`, className: '' })
-  if (visibleFields.assignee) badges.push({ text: task.assignee || 'Unassigned', className: '' })
-  if (visibleFields.missing) badges.push({ text: missing > 0 ? `Missing ${missing}` : 'Complete', className: '' })
   return badges
 }
 
@@ -1430,6 +1592,7 @@ async function openTask(taskId, push = true) {
 function closeDetail() {
   createMode.value = false
   detailOpen.value = false
+  assigneePickerOpen.value = false
   selectedTask.value = null
   selectedTaskId.value = null
   closeNotePreview()
@@ -1694,6 +1857,7 @@ onMounted(async () => {
       await bootstrapAfterAuth()
     }
   }
+  window.addEventListener('pointerdown', handlePointerDown)
   window.addEventListener('popstate', openFromPath)
 })
 
@@ -1712,6 +1876,15 @@ watch(
 )
 
 watch(
+  () => [activeView.value, timeline.value.totalDays, timeline.value.dayWidth],
+  ([view, totalDays]) => {
+    if (view !== 'overview') return
+    if (!Number.isFinite(totalDays) || totalDays <= 0) return
+    tryAutoFocusTimeline()
+  }
+)
+
+watch(
   taskNoMediaColors,
   (map) => {
     localStorage.setItem(TASK_NO_MEDIA_COLORS_KEY, JSON.stringify(map || {}))
@@ -1720,6 +1893,7 @@ watch(
 )
 
 onUnmounted(() => {
+  window.removeEventListener('pointerdown', handlePointerDown)
   window.removeEventListener('popstate', openFromPath)
   clearPendingMedia(detailPendingMedia)
   endTimelinePan()
@@ -1822,7 +1996,6 @@ onUnmounted(() => {
               <label><input v-model="visibleFields.type" type="checkbox" /> Type</label>
               <label><input v-model="visibleFields.airDate" type="checkbox" /> Air Date</label>
               <label><input v-model="visibleFields.assignee" type="checkbox" /> Assignee</label>
-              <label><input v-model="visibleFields.missing" type="checkbox" /> Missing</label>
             </div>
 
             <div class="kanban-columns">
@@ -1853,12 +2026,39 @@ onUnmounted(() => {
                     :key="task.id"
                     class="kanban-card"
                     :class="typeClass(task.type)"
+                    :style="campaignAccentStyle(task)"
                     draggable="true"
                     @dragstart="onDragStart(task.id)"
                     @dragend="onDragEnd"
                     @click="openTask(task.id)"
                   >
-                    <strong>{{ task.title }}</strong>
+                    <div v-if="task.campaign" class="task-campaign-row" :style="{ '--campaign-color': campaignThemeFromTask(task)?.color }">
+                      <span class="task-campaign-icon">{{ campaignThemeFromTask(task)?.icon }}</span>
+                      <span class="task-campaign-name">{{ task.campaign }}</span>
+                    </div>
+                    <div class="kanban-title-row">
+                      <strong>{{ task.title }}</strong>
+                      <span
+                        v-if="visibleFields.assignee"
+                        class="task-assignee-badge"
+                        :title="assigneeDisplay(task.assignee)"
+                        :aria-label="`Assignee ${assigneeDisplay(task.assignee)}`"
+                      >
+                        <img
+                          v-if="assigneeAvatarUrl(task.assignee)"
+                          class="task-assignee-avatar"
+                          :src="assigneeAvatarUrl(task.assignee)"
+                          alt=""
+                        />
+                        <span
+                          v-else
+                          class="task-assignee-fallback"
+                          :style="{ background: assigneeAvatarColor(task.assignee || 'Unassigned') }"
+                        >
+                          {{ assigneeInitials(task.assignee || 'Unassigned') }}
+                        </span>
+                      </span>
+                    </div>
                     <div class="badges">
                       <span
                         v-for="(badge, idx) in cardBadges(task)"
@@ -1980,7 +2180,7 @@ onUnmounted(() => {
                     :key="task.id"
                     class="timeline-item timeline-tile"
                     :class="task.status"
-                    :style="task.style"
+                    :style="[task.style, campaignAccentStyle(task)]"
                     role="button"
                     tabindex="0"
                     @click="openTask(task.id)"
@@ -1988,7 +2188,28 @@ onUnmounted(() => {
                     @keydown.space.prevent="openTask(task.id)"
                   >
                     <div class="timeline-tile-head">
-                      <span class="timeline-platform">IG</span>
+                      <div class="timeline-head-left">
+                        <span class="timeline-platform">IG</span>
+                        <span
+                          class="task-assignee-badge task-assignee-badge-sm"
+                          :title="assigneeDisplay(task.assignee)"
+                          :aria-label="`Assignee ${assigneeDisplay(task.assignee)}`"
+                        >
+                          <img
+                            v-if="assigneeAvatarUrl(task.assignee)"
+                            class="task-assignee-avatar"
+                            :src="assigneeAvatarUrl(task.assignee)"
+                            alt=""
+                          />
+                          <span
+                            v-else
+                            class="task-assignee-fallback"
+                            :style="{ background: assigneeAvatarColor(task.assignee || 'Unassigned') }"
+                          >
+                            {{ assigneeInitials(task.assignee || 'Unassigned') }}
+                          </span>
+                        </span>
+                      </div>
                       <div class="timeline-head-right">
                         <span class="timeline-type-chip" :class="typeClass(task.type)">
                           {{ String(task.type || '').toUpperCase() || 'POST' }}
@@ -2109,10 +2330,15 @@ onUnmounted(() => {
             <span>+</span>
             <strong>Create campaign</strong>
           </button>
-          <article v-for="campaign in campaigns" :key="campaign.id" class="campaign-card">
+          <article
+            v-for="campaign in campaigns"
+            :key="campaign.id"
+            class="campaign-card"
+            :style="{ '--campaign-color': sanitizeCampaignColor(campaign.color, DEFAULT_CAMPAIGN_COLOR) }"
+          >
             <header class="campaign-card-head">
               <div>
-                <h3>{{ campaign.name }}</h3>
+                <h3><span class="campaign-title-icon">{{ normalizeCampaignIcon(campaign.icon, DEFAULT_CAMPAIGN_ICON) }}</span>{{ campaign.name }}</h3>
                 <p class="subtle">{{ campaignDateRange(campaign) }}</p>
               </div>
               <span class="pill">{{ campaign.status || 'planning' }}</span>
@@ -2248,16 +2474,88 @@ onUnmounted(() => {
           <label class="field"><span>Mentions (space separated)</span><input v-model="contentForm.mentions" type="text" /></label>
           <label class="field">
             <span>Assignee Name</span>
-            <select v-model="contentForm.assignee_name">
-              <option value="">{{ createMode ? 'Unassigned' : 'Unchanged' }}</option>
-              <option v-for="name in assigneeOptions" :key="name" :value="name">{{ name }}</option>
-            </select>
+            <div ref="assigneePickerRef" class="assignee-picker">
+              <button
+                class="assignee-picker-trigger"
+                type="button"
+                :aria-expanded="assigneePickerOpen"
+                @click="toggleAssigneePicker"
+              >
+                <span class="task-assignee-badge">
+                  <img
+                    v-if="selectedAssigneeUser?.avatar_url"
+                    class="task-assignee-avatar"
+                    :src="selectedAssigneeUser.avatar_url"
+                    alt=""
+                  />
+                  <span
+                    v-else
+                    class="task-assignee-fallback"
+                    :style="{ background: assigneeAvatarColor(contentForm.assignee_name || 'Unassigned') }"
+                  >
+                    {{ assigneeInitials(contentForm.assignee_name || 'Unassigned') }}
+                  </span>
+                </span>
+                <span class="assignee-picker-label">{{ assigneeDisplay(contentForm.assignee_name) }}</span>
+                <span class="assignee-picker-caret">{{ assigneePickerOpen ? '▴' : '▾' }}</span>
+              </button>
+              <div v-if="assigneePickerOpen" class="assignee-picker-menu">
+                <button
+                  class="assignee-picker-option assignee-picker-option-unassigned"
+                  :class="{ active: !contentForm.assignee_name }"
+                  type="button"
+                  @click="chooseAssignee('')"
+                >
+                  <span class="task-assignee-fallback" :style="{ background: '#8e8a7f' }">U</span>
+                  <span class="assignee-picker-name">Unassigned</span>
+                </button>
+                <button
+                  v-if="auth.user?.name || auth.user?.username"
+                  class="assignee-picker-option"
+                  type="button"
+                  @click="assignToMe"
+                >
+                  <img
+                    v-if="auth.user?.avatar_url"
+                    class="task-assignee-avatar"
+                    :src="auth.user.avatar_url"
+                    alt=""
+                  />
+                  <span
+                    v-else
+                    class="task-assignee-fallback"
+                    :style="{ background: assigneeAvatarColor(auth.user?.name || auth.user?.username || 'Me') }"
+                  >
+                    {{ assigneeInitials(auth.user?.name || auth.user?.username || 'Me') }}
+                  </span>
+                  <span class="assignee-picker-name">
+                    {{ auth.user?.name || auth.user?.username }} (Assign to me)
+                  </span>
+                </button>
+                <button
+                  v-for="user in assigneeUsers"
+                  :key="user.id"
+                  class="assignee-picker-option"
+                  :class="{ active: nameKey(contentForm.assignee_name) === nameKey(user.name) }"
+                  type="button"
+                  @click="chooseAssignee(user.name)"
+                >
+                  <img v-if="user.avatar_url" class="task-assignee-avatar" :src="user.avatar_url" alt="" />
+                  <span v-else class="task-assignee-fallback" :style="{ background: assigneeAvatarColor(user.name) }">
+                    {{ assigneeInitials(user.name) }}
+                  </span>
+                  <span class="assignee-picker-name">{{ user.name }}</span>
+                </button>
+              </div>
+            </div>
           </label>
           <label class="field">
             <span>Campaign Name</span>
             <select v-model="contentForm.campaign_name">
               <option value="">No campaign</option>
-              <option v-for="campaign in campaignOptions" :key="campaign.id" :value="campaign.name">{{ campaign.name }}</option>
+              <option v-for="campaign in campaignOptions" :key="campaign.id" :value="campaign.name">
+                {{ normalizeCampaignIcon(campaign.icon, DEFAULT_CAMPAIGN_ICON) }} {{ campaign.name }}
+              </option>
             </select>
           </label>
           <label class="field"><span>Air Date</span><input v-model="contentForm.air_date" type="datetime-local" /></label>
@@ -2409,6 +2707,39 @@ onUnmounted(() => {
             <select v-model="campaignEditor.status">
               <option v-for="status in campaignStatusOptions" :key="status" :value="status">{{ status }}</option>
             </select>
+          </label>
+          <label class="field">
+            <span>Campaign color</span>
+            <input v-model="campaignEditor.color" type="color" />
+            <div class="campaign-color-preset-row">
+              <button
+                v-for="color in CAMPAIGN_COLOR_PRESETS"
+                :key="`campaign-color-${color}`"
+                class="campaign-color-preset"
+                type="button"
+                :style="{ background: color }"
+                :class="{ active: sanitizeCampaignColor(campaignEditor.color) === color }"
+                @click="campaignEditor.color = color"
+              >
+                <span v-if="sanitizeCampaignColor(campaignEditor.color) === color">✓</span>
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            <span>Campaign icon</span>
+            <input v-model="campaignEditor.icon" type="text" maxlength="16" />
+            <div class="campaign-icon-preset-row">
+              <button
+                v-for="icon in CAMPAIGN_ICON_PRESETS"
+                :key="`campaign-icon-${icon}`"
+                class="campaign-icon-preset"
+                type="button"
+                :class="{ active: normalizeCampaignIcon(campaignEditor.icon) === icon }"
+                @click="campaignEditor.icon = icon"
+              >
+                {{ icon }}
+              </button>
+            </div>
           </label>
           <label class="field"><span>Start date</span><input v-model="campaignEditor.start_date" type="date" /></label>
           <label class="field"><span>End date</span><input v-model="campaignEditor.end_date" type="date" /></label>

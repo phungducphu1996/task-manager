@@ -289,6 +289,10 @@ button {
   min-height: 190px;
 }
 
+.campaign-card {
+  border-left: 8px solid var(--campaign-color, #d8d2bc);
+}
+
 .campaign-create-card {
   display: grid;
   place-content: center;
@@ -316,6 +320,10 @@ button {
   margin: 0;
   font-size: 1.45rem;
   line-height: 1;
+}
+
+.campaign-title-icon {
+  margin-right: 8px;
 }
 
 .campaign-card-description {
@@ -617,11 +625,12 @@ h2 {
 }
 
 .timeline-campaign-bar {
+  --campaign-color: #bfc3cf;
   position: absolute;
   height: 32px;
-  border: 2px solid #bfc3cf;
+  border: 2px solid var(--campaign-color);
   border-radius: 11px;
-  background: #f8f9fc;
+  background: #fff;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -641,6 +650,7 @@ h2 {
   align-items: center;
   justify-content: center;
   font-size: 1rem;
+  color: var(--campaign-color);
 }
 
 .timeline-campaign-bar .campaign-name {
@@ -649,21 +659,19 @@ h2 {
 }
 
 .timeline-campaign-bar.status-active {
-  border-color: #5abf6a;
-  background: #f2fff4;
+  box-shadow: 0 0 0 1px rgba(25, 135, 84, 0.18) inset;
 }
 
 .timeline-campaign-bar.status-completed {
-  border-color: #77a1ef;
-  background: #f0f6ff;
+  opacity: 0.86;
 }
 
 .timeline-campaign-bar.status-paused {
-  border-color: #e6ae56;
-  background: #fff8ea;
+  filter: saturate(0.75);
 }
 
 .timeline-item {
+  --campaign-color: transparent;
   position: absolute;
   height: var(--timeline-card-height, 124px);
   border: 2px solid #1f1f1f;
@@ -677,12 +685,13 @@ h2 {
   align-items: start;
   gap: 10px;
   text-align: left;
+  box-shadow: inset 5px 0 0 var(--campaign-color);
   transition: transform 0.24s ease, box-shadow 0.24s ease;
 }
 
 .timeline-item:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.14);
+  box-shadow: inset 5px 0 0 var(--campaign-color), 0 8px 18px rgba(0, 0, 0, 0.14);
 }
 
 .timeline-item::before {
@@ -717,12 +726,53 @@ h2 {
   text-align: left;
 }
 
+.task-campaign-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border-radius: 999px;
+  border: 1.7px solid var(--campaign-color, #d8d2bc);
+  background: #fff;
+  padding: 2px 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #2f2a1f;
+  line-height: 1.2;
+}
+
+.task-campaign-icon {
+  font-size: 0.82rem;
+  line-height: 1;
+  color: var(--campaign-color, #8a8470);
+}
+
+.task-campaign-name {
+  display: inline-block;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-campaign-row {
+  margin-bottom: 2px;
+  max-width: 100%;
+}
+
 .timeline-tile-head {
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   justify-content: space-between;
+}
+
+.timeline-head-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .timeline-head-right {
@@ -1239,6 +1289,54 @@ h2 {
   gap: 5px;
 }
 
+.kanban-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kanban-title-row strong {
+  min-width: 0;
+}
+
+.task-assignee-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1.7px solid #232323;
+  background: #f6f2e0;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.task-assignee-badge-sm {
+  width: 24px;
+  height: 24px;
+}
+
+.task-assignee-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.task-assignee-fallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
 .kanban-card.drop-preview {
   border-style: dashed;
   border-width: 2px;
@@ -1386,6 +1484,144 @@ h2 {
   padding: 10px;
   font-family: inherit;
   font-size: 0.94rem;
+}
+
+.assignee-picker {
+  position: relative;
+}
+
+.assignee-picker-trigger {
+  width: 100%;
+  border: 2px solid #232323;
+  border-radius: 10px;
+  background: #fff;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.assignee-picker-trigger:hover {
+  background: #fff7e3;
+}
+
+.assignee-picker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.94rem;
+}
+
+.assignee-picker-caret {
+  margin-left: auto;
+  color: #5f5b50;
+  font-size: 0.84rem;
+  line-height: 1;
+}
+
+.assignee-picker-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  border: 2px solid #232323;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+  max-height: 270px;
+  overflow-y: auto;
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.14);
+  z-index: 45;
+}
+
+.assignee-picker-option {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #e8e1c7;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.assignee-picker-option:last-child {
+  border-bottom: 0;
+}
+
+.assignee-picker-option:hover {
+  background: #fff5de;
+}
+
+.assignee-picker-option.active {
+  background: #ffe5bf;
+}
+
+.assignee-picker-option .task-assignee-avatar,
+.assignee-picker-option .task-assignee-fallback {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1.6px solid #232323;
+  flex: 0 0 auto;
+}
+
+.assignee-picker-option .task-assignee-fallback {
+  color: #fff;
+}
+
+.assignee-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-color-preset-row,
+.campaign-icon-preset-row {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.campaign-color-preset {
+  width: 26px;
+  height: 26px;
+  border: 2px solid #232323;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.campaign-color-preset.active {
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #232323;
+}
+
+.campaign-icon-preset {
+  min-width: 34px;
+  height: 30px;
+  border: 2px solid #232323;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 1rem;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.campaign-icon-preset.active {
+  background: #ffe7c4;
 }
 
 .field input[type="color"] {
@@ -1756,19 +1992,21 @@ h2 {
 }
 
 .kanban-card {
+  --card-accent: #d8d2bc;
   border-width: 1.9px;
+  border-left: 7px solid var(--card-accent);
 }
 
 .kanban-card.type-story {
-  border-left: 7px solid #fc95b4;
+  --card-accent: #fc95b4;
 }
 
 .kanban-card.type-reel {
-  border-left: 7px solid #ffce62;
+  --card-accent: #ffce62;
 }
 
 .kanban-card.type-post {
-  border-left: 7px solid #0bc56d;
+  --card-accent: #0bc56d;
 }
 
 .kanban-card .badges {

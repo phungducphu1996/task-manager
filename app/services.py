@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import hmac
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +35,9 @@ from app.validation import LOCAL_TZ, ensure_localized_air_date, validate_task
 DASHBOARD_BASE_URL = os.getenv("DASHBOARD_BASE_URL", "http://localhost:8001/dashboard/tasks")
 UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+DEFAULT_CAMPAIGN_COLOR = "#d8d2bc"
+DEFAULT_CAMPAIGN_ICON = "📌"
 
 
 def _to_utc(value: datetime | None) -> datetime | None:
@@ -74,6 +78,24 @@ def _pick_preview_image_url(task: SocialTask) -> str | None:
     if any_image:
         return any_image.url
     return task.assets[0].url
+
+
+def _normalize_campaign_color(value: str | None) -> str | None:
+    if value is None:
+        return None
+    clean = str(value).strip().lower()
+    if not clean:
+        return None
+    return clean if HEX_COLOR_RE.fullmatch(clean) else None
+
+
+def _normalize_campaign_icon(value: str | None) -> str | None:
+    if value is None:
+        return None
+    clean = str(value).strip()
+    if not clean:
+        return None
+    return clean[:16]
 
 
 def _ext_from_content_type(content_type: str | None) -> str:
@@ -952,6 +974,8 @@ def task_summary(task: SocialTask) -> dict:
         "status": task.status,
         "assignee": task.assignee.name if task.assignee else None,
         "campaign": task.campaign.name if task.campaign else None,
+        "campaign_color": task.campaign.color if task.campaign and task.campaign.color else None,
+        "campaign_icon": task.campaign.icon if task.campaign and task.campaign.icon else None,
         "collections": [collection.name for collection in sorted(task.collections, key=lambda c: c.name.lower())],
         "missing_count": len(validation.missing_fields),
         "missing_fields": validation.missing_fields,
@@ -1012,6 +1036,8 @@ def calendar_view(
             "air_date": _to_local(task.air_date),
             "assignee": task.assignee.name if task.assignee else None,
             "campaign": task.campaign.name if task.campaign else None,
+            "campaign_color": task.campaign.color if task.campaign and task.campaign.color else None,
+            "campaign_icon": task.campaign.icon if task.campaign and task.campaign.icon else None,
             "platform": task.platform,
             "media_thumbnail": _pick_preview_image_url(task),
         }
@@ -1038,6 +1064,8 @@ def task_to_response(task: SocialTask) -> dict:
         "assignee_id": task.assignee_id,
         "assignee_name": task.assignee.name if task.assignee else None,
         "campaign_name": task.campaign.name if task.campaign else None,
+        "campaign_color": task.campaign.color if task.campaign and task.campaign.color else None,
+        "campaign_icon": task.campaign.icon if task.campaign and task.campaign.icon else None,
         "created_by": task.created_by,
         "created_at": _to_local(task.created_at),
         "updated_at": _to_local(task.updated_at),
@@ -1168,6 +1196,8 @@ def create_campaign(
     end_date: str | None = None,
     description: str | None = None,
     link_url: str | None = None,
+    color: str | None = None,
+    icon: str | None = None,
     requires_product_url: bool = False,
     brand: str | None = None,
     platform: str | None = None,
@@ -1185,6 +1215,8 @@ def create_campaign(
         end_date=end_date.strip() if end_date else None,
         description=description.strip() if description else None,
         link_url=link_url.strip() if link_url else None,
+        color=_normalize_campaign_color(color) or DEFAULT_CAMPAIGN_COLOR,
+        icon=_normalize_campaign_icon(icon) or DEFAULT_CAMPAIGN_ICON,
         requires_product_url=bool(requires_product_url),
         brand=brand.strip() if brand else None,
         platform=platform.strip() if platform else None,
@@ -1204,6 +1236,8 @@ def update_campaign(
     end_date: str | None = None,
     description: str | None = None,
     link_url: str | None = None,
+    color: str | None = None,
+    icon: str | None = None,
     requires_product_url: bool | None = None,
     brand: str | None = None,
     platform: str | None = None,
@@ -1231,6 +1265,10 @@ def update_campaign(
         campaign.description = description.strip() if description else None
     if link_url is not None:
         campaign.link_url = link_url.strip() if link_url else None
+    if color is not None:
+        campaign.color = _normalize_campaign_color(color) or DEFAULT_CAMPAIGN_COLOR
+    if icon is not None:
+        campaign.icon = _normalize_campaign_icon(icon) or DEFAULT_CAMPAIGN_ICON
     if requires_product_url is not None:
         campaign.requires_product_url = bool(requires_product_url)
     if brand is not None:

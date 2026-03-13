@@ -211,6 +211,8 @@ class CampaignCreate(BaseModel):
     end_date: str | None = None
     description: str | None = None
     link_url: str | None = None
+    color: str | None = None
+    icon: str | None = None
     requires_product_url: bool = False
     brand: str | None = None
     platform: str | None = None
@@ -223,6 +225,8 @@ class CampaignUpdate(BaseModel):
     end_date: str | None = None
     description: str | None = None
     link_url: str | None = None
+    color: str | None = None
+    icon: str | None = None
     requires_product_url: bool | None = None
     brand: str | None = None
     platform: str | None = None
@@ -236,6 +240,8 @@ class CampaignOut(BaseModel):
     end_date: str | None = None
     description: str | None = None
     link_url: str | None = None
+    color: str | None = None
+    icon: str | None = None
     requires_product_url: bool
     brand: str | None = None
     platform: str | None = None
@@ -346,6 +352,8 @@ class TaskOut(BaseModel):
     assignee_id: str | None = None
     assignee_name: str | None = None
     campaign_name: str | None = None
+    campaign_color: str | None = None
+    campaign_icon: str | None = None
     created_by: str | None = None
     created_at: datetime
     updated_at: datetime

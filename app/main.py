@@ -157,11 +157,23 @@ def _ensure_compat_schema() -> None:
                 conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."campaigns" ADD COLUMN description TEXT')
             if not _has_column("campaigns", "link_url"):
                 conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."campaigns" ADD COLUMN link_url VARCHAR(500)')
+            if not _has_column("campaigns", "color"):
+                conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."campaigns" ADD COLUMN color VARCHAR(20)')
+            if not _has_column("campaigns", "icon"):
+                conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."campaigns" ADD COLUMN icon VARCHAR(16)')
             if not _has_column("campaigns", "updated_at"):
                 conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."campaigns" ADD COLUMN updated_at TIMESTAMPTZ')
             conn.exec_driver_sql(
                 f"UPDATE \"{schema_name}\".\"campaigns\" "
                 "SET status = 'planning' WHERE status IS NULL OR TRIM(status) = ''"
+            )
+            conn.exec_driver_sql(
+                f"UPDATE \"{schema_name}\".\"campaigns\" "
+                "SET color = '#d8d2bc' WHERE color IS NULL OR TRIM(color) = ''"
+            )
+            conn.exec_driver_sql(
+                f"UPDATE \"{schema_name}\".\"campaigns\" "
+                "SET icon = '📌' WHERE icon IS NULL OR TRIM(icon) = ''"
             )
             conn.exec_driver_sql(
                 f"UPDATE \"{schema_name}\".\"campaigns\" "
@@ -224,9 +236,15 @@ def _ensure_compat_schema() -> None:
             conn.exec_driver_sql("ALTER TABLE campaigns ADD COLUMN description TEXT")
         if "link_url" not in campaign_columns:
             conn.exec_driver_sql("ALTER TABLE campaigns ADD COLUMN link_url VARCHAR(500)")
+        if "color" not in campaign_columns:
+            conn.exec_driver_sql("ALTER TABLE campaigns ADD COLUMN color VARCHAR(20)")
+        if "icon" not in campaign_columns:
+            conn.exec_driver_sql("ALTER TABLE campaigns ADD COLUMN icon VARCHAR(16)")
         if "updated_at" not in campaign_columns:
             conn.exec_driver_sql("ALTER TABLE campaigns ADD COLUMN updated_at DATETIME")
         conn.exec_driver_sql("UPDATE campaigns SET status = 'planning' WHERE status IS NULL OR TRIM(status) = ''")
+        conn.exec_driver_sql("UPDATE campaigns SET color = '#d8d2bc' WHERE color IS NULL OR TRIM(color) = ''")
+        conn.exec_driver_sql("UPDATE campaigns SET icon = '📌' WHERE icon IS NULL OR TRIM(icon) = ''")
         conn.exec_driver_sql("UPDATE campaigns SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)")
 
         user_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
@@ -834,6 +852,8 @@ def create_campaign_api(
             end_date=payload.end_date,
             description=payload.description,
             link_url=payload.link_url,
+            color=payload.color,
+            icon=payload.icon,
             requires_product_url=payload.requires_product_url,
             brand=payload.brand,
             platform=payload.platform,
@@ -861,6 +881,8 @@ def update_campaign_api(
             end_date=payload.end_date,
             description=payload.description,
             link_url=payload.link_url,
+            color=payload.color,
+            icon=payload.icon,
             requires_product_url=payload.requires_product_url,
             brand=payload.brand,
             platform=payload.platform,

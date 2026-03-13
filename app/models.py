@@ -57,6 +57,8 @@ class Campaign(Base):
     end_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    color: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(16), nullable=True)
     brand: Mapped[str | None] = mapped_column(String(120), nullable=True)
     platform: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
