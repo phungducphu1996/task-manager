@@ -332,6 +332,13 @@ function isLikelyImage(url) {
   return !/\.(mp4|mov|m4v|avi|mkv|webm)(\?.*)?$/i.test(url)
 }
 
+function isLikelyMediaUrl(url) {
+  const raw = String(url || '').trim()
+  if (!raw) return false
+  if (raw.startsWith('/media/')) return true
+  return /^(https?:\/\/\S+|\/\S+)\.(jpg|jpeg|png|webp|gif|mp4|mov|m4v|avi|mkv|webm)(\?.*)?$/i.test(raw)
+}
+
 function isDemoAssetUrl(url) {
   return /cdn\.example\.com/i.test(String(url || ''))
 }
@@ -385,6 +392,10 @@ function parseCommentContent(raw) {
     if (trimmed.startsWith(COMMENT_MEDIA_PREFIX)) {
       const url = trimmed.slice(COMMENT_MEDIA_PREFIX.length).trim()
       if (url) media.push(url)
+      return
+    }
+    if (isLikelyMediaUrl(trimmed)) {
+      media.push(trimmed)
       return
     }
     textLines.push(line)
@@ -2561,9 +2572,8 @@ onUnmounted(() => {
       <div class="detail-tabs">
         <button type="button" class="tab-btn" :class="{ active: activeTab === 'content' }" @click="activeTab = 'content'">Content</button>
         <button type="button" class="tab-btn" :class="{ active: activeTab === 'media' }" @click="activeTab = 'media'">Media</button>
-        <button type="button" class="tab-btn" :class="{ active: activeTab === 'checklist' }" @click="activeTab = 'checklist'">Checklist</button>
         <button v-if="!createMode" type="button" class="tab-btn" :class="{ active: activeTab === 'comments' }" @click="activeTab = 'comments'">Comments</button>
-        <button v-if="!createMode" type="button" class="tab-btn" :class="{ active: activeTab === 'activity' }" @click="activeTab = 'activity'">Activity</button>
+        <button v-if="!createMode" type="button" class="tab-btn" :class="{ active: activeTab === 'activity' }" @click="activeTab = 'activity'">History</button>
       </div>
 
       <div v-show="activeTab === 'content'" class="tab-panel active">
@@ -2737,13 +2747,6 @@ onUnmounted(() => {
             <p class="meta">No real media attached yet. Upload files to see preview.</p>
           </article>
         </div>
-      </div>
-
-      <div v-show="activeTab === 'checklist'" class="tab-panel active">
-        <form class="form-grid" @submit.prevent="handleSaveChecklist">
-          <label class="field full"><span>Checklist lines ([x] done or [ ] todo)</span><textarea v-model="checklistText" rows="7"></textarea></label>
-          <div class="field actions-row"><button class="primary-btn save-btn" type="submit">Save Checklist</button></div>
-        </form>
       </div>
 
       <div v-if="!createMode" v-show="activeTab === 'comments'" class="tab-panel active">

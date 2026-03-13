@@ -2236,6 +2236,7 @@ h2 {
   border-radius: 12px;
   background: #fff;
   overflow: hidden;
+  margin-top: 8px;
 }
 
 .attachments-head {
@@ -2318,16 +2319,20 @@ h2 {
 .centered-attach-row {
   display: flex;
   justify-content: center;
+  margin: 6px 0 14px;
 }
 
 .attach-media-btn {
-  min-width: 220px;
-  padding-left: 20px;
-  padding-right: 20px;
+  min-width: 200px;
+  padding-left: 18px;
+  padding-right: 18px;
 }
 
 .media-delete-btn {
   min-width: 70px;
+  background: #111;
+  color: #fff5d9;
+  border-color: #111;
 }
 
 .media-delete-btn:hover:not(:disabled) {
