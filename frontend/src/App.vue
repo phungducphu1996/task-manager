@@ -544,10 +544,17 @@ function fileSignature(file) {
   return `${file.name}-${file.size}-${file.lastModified}`
 }
 
+function createClientId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  return `tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 function mapFilesToPendingItems(fileList) {
   const files = Array.from(fileList || [])
   return files.map((file) => ({
-    id: crypto.randomUUID(),
+    id: createClientId(),
     file,
     signature: fileSignature(file),
     kind: inferMediaKind(file),
