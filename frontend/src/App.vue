@@ -123,7 +123,8 @@ const campaignEditor = reactive({
 const profileForm = reactive({
   name: '',
   username: '',
-  avatar_url: ''
+  avatar_url: '',
+  zalo_user_id: ''
 })
 
 const passwordForm = reactive({
@@ -139,6 +140,7 @@ const userEditor = reactive({
   name: '',
   username: '',
   role: 'content',
+  zalo_user_id: '',
   password: ''
 })
 const usersLoading = ref(false)
@@ -146,6 +148,12 @@ const userRows = ref([])
 const profileAvatarFile = ref(null)
 const newUserAvatarFile = ref(null)
 const rowAvatarFiles = reactive({})
+const zaloSettingsSaving = ref(false)
+const zaloTestSending = ref(false)
+const zaloSettingsForm = reactive({
+  social_group_chat_id: '',
+  source: 'none'
+})
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -751,6 +759,10 @@ function clearAuthState() {
   profileForm.name = ''
   profileForm.username = ''
   profileForm.avatar_url = ''
+  profileForm.zalo_user_id = ''
+  userEditor.zalo_user_id = ''
+  zaloSettingsForm.social_group_chat_id = ''
+  zaloSettingsForm.source = 'none'
   profileAvatarFile.value = null
   newUserAvatarFile.value = null
   Object.keys(rowAvatarFiles).forEach((userId) => {
@@ -777,7 +789,8 @@ async function login() {
       ? {
           ...result.user,
           name: result.user.name || result.user.username || '',
-          avatar_url: result.user.avatar_url || ''
+          avatar_url: result.user.avatar_url || '',
+          zalo_user_id: result.user.zalo_user_id || ''
         }
       : null
     syncProfileForm()
@@ -801,7 +814,8 @@ async function refreshMe() {
       username: me.username,
       name: me.name || me.username,
       role: me.role,
-      avatar_url: me.avatar_url || ''
+      avatar_url: me.avatar_url || '',
+      zalo_user_id: auth.user?.zalo_user_id || ''
     }
     syncProfileForm()
     saveAuthState()
@@ -823,6 +837,9 @@ function openProfileSettings() {
   passwordForm.new_password = ''
   passwordForm.confirm_password = ''
   profileAvatarFile.value = null
+  if (isAdmin.value) {
+    loadZaloSettings()
+  }
   settingsOpen.value = true
 }
 
@@ -886,6 +903,7 @@ function hydrateUserRows() {
     username: user.username || '',
     role: user.role || 'content',
     avatar_url: user.avatar_url || '',
+    zalo_user_id: user.zalo_user_id || '',
     is_active: Boolean(user.is_active),
     temp_password: ''
   }))
@@ -912,10 +930,23 @@ async function loadUsers(includeInactive = true) {
   }
 }
 
+async function loadZaloSettings() {
+  if (!auth.token || !isAdmin.value) return
+  try {
+    const payload = await requestJson('/settings/zalo')
+    zaloSettingsForm.social_group_chat_id = payload?.social_group_chat_id || ''
+    zaloSettingsForm.source = payload?.source || 'none'
+  } catch {
+    zaloSettingsForm.social_group_chat_id = ''
+    zaloSettingsForm.source = 'none'
+  }
+}
+
 function syncProfileForm() {
   profileForm.name = auth.user?.name || ''
   profileForm.username = auth.user?.username || ''
   profileForm.avatar_url = auth.user?.avatar_url || ''
+  profileForm.zalo_user_id = auth.user?.zalo_user_id || ''
 }
 
 async function loadProfile() {
@@ -927,7 +958,8 @@ async function loadProfile() {
       username: me.username || auth.user?.username || '',
       name: me.name || '',
       role: me.role || auth.user?.role || 'content',
-      avatar_url: me.avatar_url || ''
+      avatar_url: me.avatar_url || '',
+      zalo_user_id: me.zalo_user_id || ''
     }
     saveAuthState()
     syncProfileForm()
@@ -943,7 +975,8 @@ async function saveProfile() {
       method: 'PATCH',
       body: {
         name: profileForm.name.trim() || null,
-        username: profileForm.username.trim() || null
+        username: profileForm.username.trim() || null,
+        zalo_user_id: profileForm.zalo_user_id.trim() || null
       }
     })
     auth.user = {
@@ -952,7 +985,8 @@ async function saveProfile() {
       username: updated.username || auth.user?.username || '',
       name: updated.name || '',
       role: updated.role || auth.user?.role || 'content',
-      avatar_url: updated.avatar_url || ''
+      avatar_url: updated.avatar_url || '',
+      zalo_user_id: updated.zalo_user_id || ''
     }
     saveAuthState()
     await loadUsers(isAdmin.value)
@@ -1021,6 +1055,45 @@ async function saveMyPassword() {
     showToast(`Change password failed (${error.message})`, true)
   } finally {
     passwordSaving.value = false
+  }
+}
+
+async function saveZaloSettings() {
+  if (!isAdmin.value) return
+  try {
+    zaloSettingsSaving.value = true
+    const payload = await requestJson('/settings/zalo', {
+      method: 'PATCH',
+      body: {
+        social_group_chat_id: zaloSettingsForm.social_group_chat_id.trim() || null
+      }
+    })
+    zaloSettingsForm.social_group_chat_id = payload?.social_group_chat_id || ''
+    zaloSettingsForm.source = payload?.source || 'none'
+    showToast('Zalo settings saved')
+  } catch (error) {
+    showToast(`Save Zalo settings failed (${error.message})`, true)
+  } finally {
+    zaloSettingsSaving.value = false
+  }
+}
+
+async function testZaloSettings() {
+  if (!isAdmin.value) return
+  try {
+    zaloTestSending.value = true
+    const result = await requestJson('/settings/zalo/test', { method: 'POST' })
+    const sent = Number(result?.sent || 0)
+    const failed = Number(result?.failed || 0)
+    if (failed > 0) {
+      showToast(`Test sent ${sent}, failed ${failed}`, true)
+      return
+    }
+    showToast(`Test sent ${sent} message(s)`)
+  } catch (error) {
+    showToast(`Test Zalo failed (${error.message})`, true)
+  } finally {
+    zaloTestSending.value = false
   }
 }
 
@@ -1131,6 +1204,9 @@ function campaignDateRange(campaign) {
 async function bootstrapAfterAuth() {
   await loadProfile()
   await Promise.all([loadDashboard(), loadCampaigns(), loadUsers(isAdmin.value)])
+  if (isAdmin.value) {
+    await loadZaloSettings()
+  }
   openFromPath()
   tryAutoFocusTimeline()
 }
@@ -1154,6 +1230,7 @@ async function createManagedUser() {
         name,
         username,
         role: userEditor.role.trim() || 'content',
+        zalo_user_id: userEditor.zalo_user_id.trim() || null,
         password: userEditor.password,
         is_active: true
       }
@@ -1168,6 +1245,7 @@ async function createManagedUser() {
     userEditor.name = ''
     userEditor.username = ''
     userEditor.role = 'content'
+    userEditor.zalo_user_id = ''
     userEditor.password = ''
     newUserAvatarFile.value = null
     await loadUsers(true)
@@ -1185,6 +1263,7 @@ async function saveManagedUser(row) {
         name: row.name.trim(),
         username: row.username.trim().toLowerCase(),
         role: row.role.trim() || 'content',
+        zalo_user_id: String(row.zalo_user_id || '').trim() || null,
         is_active: Boolean(row.is_active)
       }
     })
@@ -2484,6 +2563,7 @@ onUnmounted(() => {
           <label class="field"><span>Full name</span><input v-model="userEditor.name" type="text" /></label>
           <label class="field"><span>Username</span><input v-model="userEditor.username" type="text" /></label>
           <label class="field"><span>Role</span><input v-model="userEditor.role" type="text" placeholder="content / designer / admin" /></label>
+          <label class="field"><span>Zalo ID</span><input v-model="userEditor.zalo_user_id" type="text" placeholder="optional" /></label>
           <label class="field"><span>Password</span><input v-model="userEditor.password" type="password" /></label>
           <label class="field full"><span>Avatar file (optional)</span><input type="file" accept="image/*" @change="onNewUserAvatarChange" /></label>
           <div class="field actions-row full"><button class="primary-btn save-btn" type="submit">Add User</button></div>
@@ -2498,6 +2578,7 @@ onUnmounted(() => {
                 <label class="field"><span>Name</span><input v-model="row.name" type="text" /></label>
                 <label class="field"><span>Username</span><input v-model="row.username" type="text" /></label>
                 <label class="field"><span>Role</span><input v-model="row.role" type="text" /></label>
+                <label class="field"><span>Zalo ID</span><input v-model="row.zalo_user_id" type="text" /></label>
                 <label class="field"><span>Avatar file</span><input type="file" accept="image/*" @change="onManagedUserAvatarChange(row.id, $event)" /></label>
                 <label class="field checkbox-field">
                   <input v-model="row.is_active" type="checkbox" />
@@ -2959,12 +3040,36 @@ onUnmounted(() => {
           </div>
           <label class="field"><span>Full name</span><input v-model="profileForm.name" type="text" /></label>
           <label class="field"><span>Username</span><input v-model="profileForm.username" type="text" /></label>
+          <label class="field"><span>Zalo ID</span><input v-model="profileForm.zalo_user_id" type="text" placeholder="zalo user id" /></label>
           <div class="field actions-row full">
             <button class="primary-btn save-btn" type="submit" :disabled="profileSaving">
               {{ profileSaving ? 'Saving...' : 'Save Profile' }}
             </button>
           </div>
         </form>
+
+        <template v-if="isAdmin">
+          <div class="settings-divider"></div>
+          <form class="form-grid" @submit.prevent="saveZaloSettings">
+            <label class="field full">
+              <span>Social group chat ID</span>
+              <input
+                v-model="zaloSettingsForm.social_group_chat_id"
+                type="text"
+                placeholder="Zalo group chat id"
+              />
+              <small class="meta">Source: {{ zaloSettingsForm.source }}</small>
+            </label>
+            <div class="field actions-row full">
+              <button class="primary-btn save-btn" type="submit" :disabled="zaloSettingsSaving">
+                {{ zaloSettingsSaving ? 'Saving...' : 'Save Zalo Settings' }}
+              </button>
+              <button class="ghost-btn" type="button" :disabled="zaloTestSending || zaloSettingsSaving" @click="testZaloSettings">
+                {{ zaloTestSending ? 'Testing...' : 'Test Zalo Notify' }}
+              </button>
+            </div>
+          </form>
+        </template>
 
         <div class="settings-divider"></div>
 

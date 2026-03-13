@@ -217,6 +217,16 @@ class TaskActivityLog(Base):
     task: Mapped[SocialTask] = relationship(back_populates="activity_logs")
 
 
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class NotificationJob(Base):
     __tablename__ = "notification_jobs"
 

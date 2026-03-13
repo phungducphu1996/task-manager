@@ -45,6 +45,8 @@ from app.schemas import (
     ReminderRunRequest,
     ReminderRunResponse,
     SellerOut,
+    ZaloSettingsOut,
+    ZaloSettingsUpdate,
     TaskCommentCreate,
     TaskCreate,
     TaskOut,
@@ -97,9 +99,12 @@ from app.services import (
     update_user,
     set_user_password,
     set_user_avatar,
+    send_zalo_test_notification,
     authenticate_local_user,
     change_my_password,
     ensure_principal_user,
+    get_zalo_settings,
+    update_zalo_settings,
     validate_for_task,
 )
 
@@ -190,6 +195,8 @@ def _ensure_compat_schema() -> None:
                 )
             if not _has_column("users", "avatar_url"):
                 conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."users" ADD COLUMN avatar_url VARCHAR(600)')
+            if not _has_column("users", "zalo_user_id"):
+                conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."users" ADD COLUMN zalo_user_id VARCHAR(120)')
             if not _has_column("users", "password_hash"):
                 conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."users" ADD COLUMN password_hash VARCHAR(255)')
             if not _has_column("users", "is_active"):
@@ -255,6 +262,8 @@ def _ensure_compat_schema() -> None:
             conn.exec_driver_sql("ALTER TABLE users ADD COLUMN role VARCHAR(60) DEFAULT 'content'")
         if "avatar_url" not in user_columns:
             conn.exec_driver_sql("ALTER TABLE users ADD COLUMN avatar_url VARCHAR(600)")
+        if "zalo_user_id" not in user_columns:
+            conn.exec_driver_sql("ALTER TABLE users ADD COLUMN zalo_user_id VARCHAR(120)")
         if "password_hash" not in user_columns:
             conn.exec_driver_sql("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)")
         if "is_active" not in user_columns:
@@ -376,6 +385,7 @@ def auth_login_api(payload: LoginRequest, db: Session = Depends(get_db)):
             "name": local_user.name,
             "role": local_user.role,
             "avatar_url": local_user.avatar_url,
+            "zalo_user_id": local_user.zalo_user_id,
         },
     }
 
@@ -480,6 +490,7 @@ def create_user_api(
             username=payload.username,
             role=payload.role,
             avatar_url=payload.avatar_url,
+            zalo_user_id=payload.zalo_user_id,
             password=payload.password,
             is_active=payload.is_active,
         )
@@ -503,6 +514,7 @@ def update_user_api(
             username=payload.username,
             role=payload.role,
             avatar_url=payload.avatar_url,
+            zalo_user_id=payload.zalo_user_id,
             is_active=payload.is_active,
         )
     except ValueError as exc:
@@ -593,6 +605,7 @@ def update_me_profile_api(
             name=payload.name,
             username=payload.username,
             avatar_url=payload.avatar_url,
+            zalo_user_id=payload.zalo_user_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -639,6 +652,45 @@ def change_my_password_api(
     except ValueError as exc:
         detail = str(exc)
         raise HTTPException(status_code=400, detail=detail)
+
+
+@app.get("/settings/zalo", response_model=ZaloSettingsOut)
+def get_zalo_settings_api(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_current_principal),
+):
+    _require_admin(principal)
+    return get_zalo_settings(db)
+
+
+@app.patch("/settings/zalo", response_model=ZaloSettingsOut)
+def update_zalo_settings_api(
+    payload: ZaloSettingsUpdate,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_current_principal),
+):
+    _require_admin(principal)
+    return update_zalo_settings(
+        db,
+        social_group_chat_id=payload.social_group_chat_id,
+        actor_name=principal.username,
+    )
+
+
+@app.post("/settings/zalo/test")
+def test_zalo_settings_api(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_current_principal),
+):
+    _require_admin(principal)
+    result = send_zalo_test_notification(
+        db,
+        actor_name=principal.username,
+        principal_user_id=principal.user_id,
+    )
+    if not result.get("ok") and int(result.get("sent", 0) or 0) == 0:
+        raise HTTPException(status_code=400, detail=str(result.get("error") or "zalo_test_failed"))
+    return result
 
 
 @app.post("/tasks", response_model=TaskOut)

@@ -38,13 +38,39 @@ def _post_worker(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "zalo_worker_unreachable", "detail": str(exc)}
 
 
-def send_text(text: str) -> dict[str, Any]:
-    return _post_worker("api/send-text", {"text": text})
+def send_text(
+    text: str,
+    *,
+    target: dict[str, Any] | None = None,
+    task_url: str | None = None,
+    event_type: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"text": text}
+    if target:
+        payload["target"] = target
+    if task_url:
+        payload["task_url"] = task_url
+    if event_type:
+        payload["event_type"] = event_type
+    return _post_worker("api/send-text", payload)
 
 
-def send_package(package: dict[str, Any]) -> dict[str, Any]:
+def send_package(
+    package: dict[str, Any],
+    *,
+    target: dict[str, Any] | None = None,
+    task_url: str | None = None,
+    event_type: str | None = None,
+) -> dict[str, Any]:
     # Preferred endpoint if worker supports rich package.
-    result = _post_worker("api/send-package", {"package": package})
+    payload: dict[str, Any] = {"package": package}
+    if target:
+        payload["target"] = target
+    if task_url:
+        payload["task_url"] = task_url
+    if event_type:
+        payload["event_type"] = event_type
+    result = _post_worker("api/send-package", payload)
     if result.get("ok"):
         return result
 
@@ -59,8 +85,12 @@ def send_package(package: dict[str, Any]) -> dict[str, Any]:
         f"Product URL: {package.get('product_url')}\n"
         f"Media:\n{media_text}"
     )
-    fallback = send_text(fallback_text)
+    fallback = send_text(
+        fallback_text,
+        target=target,
+        task_url=task_url,
+        event_type=event_type,
+    )
     if fallback.get("ok"):
         return {"ok": True, "fallback": True}
     return fallback
-

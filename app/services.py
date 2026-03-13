@@ -4,7 +4,6 @@ import base64
 import binascii
 import hashlib
 import hmac
-import os
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -15,24 +14,28 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import DASHBOARD_BASE_URL, SOCIAL_GROUP_CHAT_ID
 from app.jobs import schedule_task_jobs
 from app.models import (
     Campaign,
     Collection,
     HashtagEntry,
     HashtagGroup,
+    NotificationLog,
     SocialAsset,
     SocialTask,
+    SystemSetting,
     TaskCollectionLink,
     TaskActivityLog,
     TaskChecklistItem,
     TaskComment,
     User,
 )
+from app.notifier import send_text
 from app.schemas import Base64MediaFileIn, ChecklistUpdateRequest, TaskCreate, TaskUpdate
+from app.task_notifications import KEY_FIELD_NOTIFICATION_SCOPE, SETTING_SOCIAL_GROUP_CHAT_ID, emit_task_notification
 from app.validation import LOCAL_TZ, ensure_localized_air_date, validate_task
 
-DASHBOARD_BASE_URL = os.getenv("DASHBOARD_BASE_URL", "http://localhost:8001/dashboard/tasks")
 UPLOADS_DIR = Path(__file__).resolve().parent.parent / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -178,6 +181,30 @@ def log_activity(
     )
 
 
+def _safe_emit_task_notification(
+    db: Session,
+    *,
+    event_type: str,
+    task: SocialTask,
+    actor: User | None = None,
+    context: dict[str, Any] | None = None,
+) -> None:
+    try:
+        emit_task_notification(db, event_type=event_type, task=task, actor=actor, context=context or {})
+    except Exception:
+        # Notification must not break task API flow.
+        db.rollback()
+
+
+def _normalize_zalo_user_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    clean = value.strip()
+    if not clean:
+        return None
+    return clean[:120]
+
+
 def _normalize_username(value: str | None) -> str | None:
     if value is None:
         return None
@@ -239,7 +266,11 @@ def get_or_create_user(db: Session, name: str | None, zalo_user_id: str | None =
     user = db.execute(statement).scalars().first()
     if user:
         if zalo_user_id and not user.zalo_user_id:
-            user.zalo_user_id = zalo_user_id
+            duplicate = db.execute(
+                select(User).where(User.zalo_user_id == zalo_user_id, User.id != user.id)
+            ).scalars().first()
+            if not duplicate:
+                user.zalo_user_id = zalo_user_id
         if not user.is_active:
             user.is_active = True
         return user
@@ -296,6 +327,7 @@ def create_user(
     username: str,
     role: str = "content",
     avatar_url: str | None = None,
+    zalo_user_id: str | None = None,
     password: str,
     is_active: bool = True,
 ) -> User:
@@ -309,11 +341,16 @@ def create_user(
         raise ValueError("username_exists")
     if db.execute(select(User).where(func.lower(User.name) == clean_name.lower())).scalars().first():
         raise ValueError("user_name_exists")
+    clean_zalo_user_id = _normalize_zalo_user_id(zalo_user_id)
+    if clean_zalo_user_id:
+        if db.execute(select(User).where(User.zalo_user_id == clean_zalo_user_id)).scalars().first():
+            raise ValueError("zalo_user_id_exists")
     user = User(
         name=clean_name[:120],
         username=clean_username[:120],
         role=_normalize_role(role),
         avatar_url=(avatar_url or "").strip() or None,
+        zalo_user_id=clean_zalo_user_id,
         password_hash=_hash_password(password),
         is_active=bool(is_active),
     )
@@ -331,6 +368,7 @@ def update_user(
     username: str | None = None,
     role: str | None = None,
     avatar_url: str | None = None,
+    zalo_user_id: str | None = None,
     is_active: bool | None = None,
 ) -> User:
     user = get_user_by_id(db, user_id)
@@ -366,6 +404,18 @@ def update_user(
 
     if avatar_url is not None:
         user.avatar_url = avatar_url.strip() or None
+
+    if zalo_user_id is not None:
+        clean_zalo_user_id = _normalize_zalo_user_id(zalo_user_id)
+        if clean_zalo_user_id:
+            duplicate = (
+                db.execute(select(User).where(User.zalo_user_id == clean_zalo_user_id, User.id != user_id))
+                .scalars()
+                .first()
+            )
+            if duplicate:
+                raise ValueError("zalo_user_id_exists")
+        user.zalo_user_id = clean_zalo_user_id
 
     if is_active is not None:
         user.is_active = bool(is_active)
@@ -481,8 +531,9 @@ def update_my_profile(
     name: str | None = None,
     username: str | None = None,
     avatar_url: str | None = None,
+    zalo_user_id: str | None = None,
 ) -> User:
-    return update_user(db, user_id, name=name, username=username, avatar_url=avatar_url)
+    return update_user(db, user_id, name=name, username=username, avatar_url=avatar_url, zalo_user_id=zalo_user_id)
 
 
 def change_my_password(
@@ -499,6 +550,179 @@ def change_my_password(
     db.commit()
     db.refresh(user)
     return user
+
+
+def _get_system_setting(db: Session, key: str) -> SystemSetting | None:
+    return db.get(SystemSetting, key)
+
+
+def get_zalo_settings(db: Session) -> dict[str, str | None]:
+    setting = _get_system_setting(db, SETTING_SOCIAL_GROUP_CHAT_ID)
+    db_value = str(setting.value or "").strip() if setting else ""
+    if db_value:
+        return {
+            "social_group_chat_id": db_value,
+            "source": "db",
+        }
+    if SOCIAL_GROUP_CHAT_ID:
+        return {
+            "social_group_chat_id": SOCIAL_GROUP_CHAT_ID,
+            "source": "env",
+        }
+    return {
+        "social_group_chat_id": None,
+        "source": "none",
+    }
+
+
+def update_zalo_settings(
+    db: Session,
+    *,
+    social_group_chat_id: str | None,
+    actor_name: str | None = None,
+) -> dict[str, str | None]:
+    actor = get_or_create_user(db, actor_name) if actor_name else None
+    clean_value = str(social_group_chat_id or "").strip() or None
+    setting = _get_system_setting(db, SETTING_SOCIAL_GROUP_CHAT_ID)
+    if setting:
+        setting.value = clean_value
+        setting.updated_by = actor.id if actor else setting.updated_by
+    else:
+        setting = SystemSetting(
+            key=SETTING_SOCIAL_GROUP_CHAT_ID,
+            value=clean_value,
+            updated_by=actor.id if actor else None,
+        )
+        db.add(setting)
+    db.commit()
+    return get_zalo_settings(db)
+
+
+def _notification_recipient_label(group_chat_id: str | None = None, user_zalo_id: str | None = None) -> str:
+    if group_chat_id:
+        return f"group:{group_chat_id}"
+    if user_zalo_id:
+        return f"user:{user_zalo_id}"
+    return "unknown"
+
+
+def send_zalo_test_notification(
+    db: Session,
+    *,
+    actor_name: str | None = None,
+    principal_user_id: str | None = None,
+) -> dict[str, Any]:
+    actor = get_user_by_principal(db, principal_user_id or "", actor_name or "")
+    if not actor and actor_name:
+        actor = get_or_create_user(db, actor_name)
+
+    actor_display = actor.name if actor and actor.name else (actor_name or "admin")
+    actor_zalo_id = str(actor.zalo_user_id).strip() if actor and actor.zalo_user_id else ""
+
+    zalo_settings = get_zalo_settings(db)
+    group_chat_id = str(zalo_settings.get("social_group_chat_id") or "").strip()
+    source = str(zalo_settings.get("source") or "none")
+    dashboard_url = DASHBOARD_BASE_URL
+    message = (
+        f"[TEST ZALO NOTIFY]\n"
+        f"Nguoi gui: {actor_display}\n"
+        f"Ket noi worker thanh cong.\n"
+        f"Link dashboard: {dashboard_url}"
+    )
+
+    targets: list[dict[str, Any]] = []
+    if group_chat_id:
+        targets.append({"group_chat_id": group_chat_id})
+    if actor_zalo_id:
+        targets.append({"user_zalo_id": actor_zalo_id})
+
+    if not targets:
+        db.add(
+            NotificationLog(
+                task_id=None,
+                channel="zalo",
+                recipient=None,
+                message=message,
+                payload={
+                    "event_type": "settings_test",
+                    "task_url": dashboard_url,
+                    "source": source,
+                    "error": "missing_routing_target",
+                },
+                status="failed",
+            )
+        )
+        db.commit()
+        return {
+            "ok": False,
+            "sent": 0,
+            "failed": 1,
+            "error": "missing_routing_target",
+            "source": source,
+        }
+
+    sent = 0
+    failed = 0
+    results: list[dict[str, Any]] = []
+    for target in targets:
+        target_payload = {
+            "group_chat_id": target.get("group_chat_id"),
+            "user_zalo_id": target.get("user_zalo_id"),
+            "mentions": [],
+            "task_url": dashboard_url,
+            "event_type": "settings_test",
+        }
+        try:
+            worker_result = send_text(
+                message,
+                target=target_payload,
+                task_url=dashboard_url,
+                event_type="settings_test",
+            )
+        except Exception as exc:  # pragma: no cover - safety net
+            worker_result = {"ok": False, "error": "zalo_send_exception", "detail": str(exc)}
+
+        status = "sent" if worker_result.get("ok") else "failed"
+        if status == "sent":
+            sent += 1
+        else:
+            failed += 1
+
+        db.add(
+            NotificationLog(
+                task_id=None,
+                channel="zalo",
+                recipient=_notification_recipient_label(
+                    group_chat_id=target_payload.get("group_chat_id"),
+                    user_zalo_id=target_payload.get("user_zalo_id"),
+                ),
+                message=message,
+                payload={
+                    "event_type": "settings_test",
+                    "task_url": dashboard_url,
+                    "target": target_payload,
+                    "source": source,
+                    "worker_result": worker_result,
+                },
+                status=status,
+            )
+        )
+        results.append(
+            {
+                "target": target_payload,
+                "status": status,
+                "worker_result": worker_result,
+            }
+        )
+
+    db.commit()
+    return {
+        "ok": failed == 0,
+        "sent": sent,
+        "failed": failed,
+        "source": source,
+        "results": results,
+    }
 
 
 def get_or_create_campaign(
@@ -675,7 +899,15 @@ def create_task(db: Session, payload: TaskCreate) -> SocialTask:
         schedule_task_jobs(db, task)
 
     db.commit()
-    return get_task_by_id(db, task.id)
+    created_task = get_task_by_id(db, task.id)
+    _safe_emit_task_notification(
+        db,
+        event_type="task_created",
+        task=created_task,
+        actor=creator,
+        context={"media_count": len(created_task.assets)},
+    )
+    return created_task
 
 
 def get_task_by_id(db: Session, task_id: str) -> SocialTask:
@@ -741,11 +973,13 @@ def update_task(db: Session, task_id: str, payload: TaskUpdate, actor_name: str 
     actor_id = actor.id if actor else None
 
     changed_air_date = False
+    changed_fields: dict[str, tuple[Any, Any]] = {}
 
     def update_field(field_name: str, new_value: Any):
         old_value = getattr(task, field_name)
         if old_value != new_value:
             setattr(task, field_name, new_value)
+            changed_fields[field_name] = (old_value, new_value)
             log_activity(
                 db,
                 task.id,
@@ -805,7 +1039,43 @@ def update_task(db: Session, task_id: str, payload: TaskUpdate, actor_name: str 
         schedule_task_jobs(db, task)
 
     db.commit()
-    return get_task_by_id(db, task.id)
+    updated_task = get_task_by_id(db, task.id)
+
+    if "status" in changed_fields:
+        old_status, new_status = changed_fields["status"]
+        _safe_emit_task_notification(
+            db,
+            event_type="task_status_changed",
+            task=updated_task,
+            actor=actor,
+            context={"old_status": old_status, "new_status": new_status},
+        )
+
+    if "assignee_id" in changed_fields:
+        old_assignee_id, _new_assignee_id = changed_fields["assignee_id"]
+        old_assignee_name = None
+        if old_assignee_id:
+            old_assignee = db.get(User, old_assignee_id)
+            old_assignee_name = old_assignee.name if old_assignee else None
+        _safe_emit_task_notification(
+            db,
+            event_type="task_assigned",
+            task=updated_task,
+            actor=actor,
+            context={"old_assignee_name": old_assignee_name, "new_assignee_name": updated_task.assignee.name if updated_task.assignee else None},
+        )
+
+    key_field_changes = [field for field in KEY_FIELD_NOTIFICATION_SCOPE if field in changed_fields]
+    if key_field_changes:
+        _safe_emit_task_notification(
+            db,
+            event_type="task_content_updated",
+            task=updated_task,
+            actor=actor,
+            context={"changed_fields": sorted(key_field_changes)},
+        )
+
+    return updated_task
 
 
 def delete_task(db: Session, task_id: str, actor_name: str | None = None) -> None:
@@ -819,9 +1089,19 @@ def delete_task(db: Session, task_id: str, actor_name: str | None = None) -> Non
 def add_assets(db: Session, task_id: str, media_urls: list[str], actor_name: str | None = None) -> SocialTask:
     task = get_task_by_id(db, task_id)
     actor = get_or_create_user(db, actor_name) if actor_name else None
-    _attach_assets(db, task, media_urls, actor.id if actor else None)
+    clean_urls = [url.strip() for url in media_urls if str(url or "").strip()]
+    _attach_assets(db, task, clean_urls, actor.id if actor else None)
     db.commit()
-    return get_task_by_id(db, task.id)
+    updated_task = get_task_by_id(db, task.id)
+    if clean_urls:
+        _safe_emit_task_notification(
+            db,
+            event_type="task_media_uploaded",
+            task=updated_task,
+            actor=actor,
+            context={"media_count": len(clean_urls)},
+        )
+    return updated_task
 
 
 def add_base64_assets(
@@ -833,6 +1113,7 @@ def add_base64_assets(
     task = get_task_by_id(db, task_id)
     actor = get_or_create_user(db, actor_name) if actor_name else None
     actor_id = actor.id if actor else None
+    uploaded_count = 0
 
     for item in files:
         kind, storage_path, url = _save_base64_media_file(item)
@@ -845,9 +1126,19 @@ def add_base64_assets(
             )
         )
         log_activity(db, task.id, action="asset_uploaded", actor_id=actor_id, new_value=url)
+        uploaded_count += 1
 
     db.commit()
-    return get_task_by_id(db, task.id)
+    updated_task = get_task_by_id(db, task.id)
+    if uploaded_count > 0:
+        _safe_emit_task_notification(
+            db,
+            event_type="task_media_uploaded",
+            task=updated_task,
+            actor=actor,
+            context={"media_count": uploaded_count},
+        )
+    return updated_task
 
 
 def delete_asset(
@@ -908,6 +1199,14 @@ def add_comment(
     )
     db.commit()
     db.refresh(comment)
+    commented_task = get_task_by_id(db, task.id)
+    _safe_emit_task_notification(
+        db,
+        event_type="task_comment_added",
+        task=commented_task,
+        actor=user,
+        context={"comment_text": content},
+    )
     return comment
 
 

@@ -12,6 +12,7 @@ export default defineConfig({
       '/collections': 'http://127.0.0.1:8001',
       '/hashtag-groups': 'http://127.0.0.1:8001',
       '/hashtags': 'http://127.0.0.1:8001',
+      '/settings': 'http://127.0.0.1:8001',
       '/analytics': 'http://127.0.0.1:8001',
       '/reminders': 'http://127.0.0.1:8001',
       '/dashboard/kanban': 'http://127.0.0.1:8001',

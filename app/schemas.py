@@ -164,6 +164,7 @@ class UserCreate(BaseModel):
     username: str
     role: str = "content"
     avatar_url: str | None = None
+    zalo_user_id: str | None = None
     password: str = Field(min_length=6, max_length=128)
     is_active: bool = True
 
@@ -173,6 +174,7 @@ class UserUpdate(BaseModel):
     username: str | None = None
     role: str | None = None
     avatar_url: str | None = None
+    zalo_user_id: str | None = None
     is_active: bool | None = None
 
 
@@ -184,6 +186,7 @@ class ProfileUpdate(BaseModel):
     name: str | None = None
     username: str | None = None
     avatar_url: str | None = None
+    zalo_user_id: str | None = None
 
 
 class ProfilePasswordUpdate(BaseModel):
@@ -197,6 +200,7 @@ class UserOut(BaseModel):
     username: str | None = None
     role: str
     avatar_url: str | None = None
+    zalo_user_id: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -414,3 +418,12 @@ class AnalyticsBasic(BaseModel):
     overdue_count: int
     campaign_count: int
     top_assignees: list[dict]
+
+
+class ZaloSettingsOut(BaseModel):
+    social_group_chat_id: str | None = None
+    source: str = "none"
+
+
+class ZaloSettingsUpdate(BaseModel):
+    social_group_chat_id: str | None = None
