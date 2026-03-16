@@ -254,5 +254,19 @@ class NotificationLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class TaskPreviewToken(Base):
+    __tablename__ = "task_preview_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("social_tasks.id", ondelete="CASCADE"), index=True)
+    token: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 Index("ix_task_status_air_date", SocialTask.status, SocialTask.air_date)
 Index("ix_jobs_pending_run_at", NotificationJob.status, NotificationJob.run_at)
+Index("ix_task_preview_token_active", TaskPreviewToken.task_id, TaskPreviewToken.revoked_at, TaskPreviewToken.expires_at)

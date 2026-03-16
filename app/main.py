@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import html
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -50,6 +51,7 @@ from app.schemas import (
     TaskCommentCreate,
     TaskCreate,
     TaskOut,
+    TaskPreviewLinkOut,
     TaskUpdate,
     UserCreate,
     UserOut,
@@ -78,6 +80,7 @@ from app.services import (
     delete_hashtag_group,
     delete_task,
     get_task_by_id,
+    get_task_preview_link,
     get_user_by_principal,
     kanban_view,
     list_campaigns,
@@ -88,6 +91,8 @@ from app.services import (
     list_tasks,
     remove_task_from_collection,
     replace_checklist,
+    regenerate_task_preview_link,
+    resolve_public_preview_task,
     suggest_hashtags,
     task_to_response,
     update_my_profile,
@@ -335,6 +340,240 @@ def _require_admin(principal: Principal) -> None:
         raise HTTPException(status_code=403, detail="admin_only")
 
 
+def _preview_type_label(task_type: str | None) -> str:
+    mapping = {"story": "Story", "reel": "Reel", "post": "Post"}
+    key = str(task_type or "").strip().lower()
+    return mapping.get(key, key or "Task")
+
+
+def _format_preview_air_date(value: datetime | None) -> str:
+    if not value:
+        return "No air date"
+    return value.strftime("%d/%m/%Y %H:%M")
+
+
+def _render_public_preview_error_page(title: str, message: str) -> str:
+    safe_title = html.escape(title)
+    safe_message = html.escape(message)
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{safe_title}</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Wix Madefor Display", "Segoe UI", sans-serif;
+        background: #111;
+        color: #f8f1d9;
+        display: grid;
+        place-items: center;
+      }}
+      .card {{
+        width: min(640px, calc(100vw - 24px));
+        border: 2px solid #f8f1d9;
+        border-radius: 20px;
+        background: #1d1d1d;
+        padding: 22px;
+      }}
+      h1 {{ margin: 0 0 8px; font-size: 1.8rem; }}
+      p {{ margin: 0; color: #d7cfb3; }}
+    </style>
+  </head>
+  <body>
+    <article class="card">
+      <h1>{safe_title}</h1>
+      <p>{safe_message}</p>
+    </article>
+  </body>
+</html>"""
+
+
+def _render_public_preview_page(payload: dict) -> str:
+    title = html.escape(str(payload.get("title") or "Untitled task"))
+    task_type = _preview_type_label(str(payload.get("type") or ""))
+    status = html.escape(str(payload.get("status") or "idea").upper())
+    air_date = _format_preview_air_date(payload.get("air_date"))
+    campaign_name = html.escape(str(payload.get("campaign_name") or "No campaign"))
+    assignee_name = html.escape(str(payload.get("assignee_name") or "Unassigned"))
+    caption = html.escape(str(payload.get("caption") or "").strip())
+    quick_note = html.escape(str(payload.get("quick_note") or "").strip())
+    hashtags = html.escape(" ".join(payload.get("hashtags") or []))
+    mentions = html.escape(" ".join(payload.get("mentions") or []))
+    expires_at = payload.get("token_expires_at")
+    expires_text = _format_preview_air_date(expires_at) if isinstance(expires_at, datetime) else "Unknown"
+
+    assets = payload.get("assets") or []
+    asset_items: list[str] = []
+    for idx, asset in enumerate(assets):
+        url = str(asset.get("url") or "").strip()
+        if not url:
+            continue
+        kind = str(asset.get("kind") or "image").lower()
+        safe_url = html.escape(url)
+        if kind == "video":
+            node = (
+                f'<figure class="asset-card"><video controls preload="metadata" src="{safe_url}"></video>'
+                f'<figcaption>Media {idx + 1}</figcaption></figure>'
+            )
+        else:
+            node = (
+                f'<figure class="asset-card"><img src="{safe_url}" alt="media {idx + 1}" />'
+                f'<figcaption>Media {idx + 1}</figcaption></figure>'
+            )
+        asset_items.append(node)
+    assets_html = "".join(asset_items)
+
+    if not assets_html:
+        fallback_text = quick_note or "No media yet."
+        assets_html = (
+            '<div class="no-media">'
+            f"<p>{fallback_text}</p>"
+            "</div>"
+        )
+
+    caption_html = caption or "<em>No caption</em>"
+    hashtags_html = hashtags or "<em>No hashtags</em>"
+    mentions_html = mentions or "<em>No mentions</em>"
+
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Public Preview - {title}</title>
+    <style>
+      :root {{
+        color-scheme: light;
+      }}
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Wix Madefor Display", "Segoe UI", sans-serif;
+        background: #f0f1f4;
+        color: #111;
+        padding: 20px;
+      }}
+      .wrap {{
+        width: min(960px, 100%);
+        margin: 0 auto;
+        border: 2px solid #222;
+        border-radius: 24px;
+        background: #fffef8;
+        overflow: hidden;
+      }}
+      .head {{
+        padding: 18px 20px;
+        border-bottom: 2px solid #222;
+        background: #fdf3df;
+      }}
+      .head h1 {{
+        margin: 0;
+        font-size: 2rem;
+        line-height: 1.1;
+      }}
+      .meta {{
+        margin-top: 8px;
+        color: #565142;
+        font-size: 0.98rem;
+      }}
+      .chip {{
+        display: inline-flex;
+        padding: 3px 9px;
+        border: 1.6px solid #222;
+        border-radius: 999px;
+        margin-right: 8px;
+        margin-top: 6px;
+        font-size: 0.82rem;
+        font-weight: 700;
+      }}
+      .body {{
+        padding: 16px 20px 24px;
+      }}
+      .assets {{
+        display: grid;
+        gap: 12px;
+      }}
+      .asset-card {{
+        margin: 0;
+        border: 2px solid #222;
+        border-radius: 16px;
+        overflow: hidden;
+        background: #fff;
+      }}
+      .asset-card img,
+      .asset-card video {{
+        width: 100%;
+        max-height: 540px;
+        object-fit: contain;
+        background: #f2f0e2;
+        display: block;
+      }}
+      .asset-card figcaption {{
+        padding: 8px 10px;
+        font-size: 0.84rem;
+        color: #5a564a;
+      }}
+      .no-media {{
+        border: 2px dashed #777;
+        border-radius: 16px;
+        padding: 24px;
+        background: #f2f0e2;
+      }}
+      .no-media p {{
+        margin: 0;
+        white-space: pre-wrap;
+      }}
+      .content {{
+        margin-top: 16px;
+        border-top: 1px solid #ddd6c3;
+        padding-top: 14px;
+        display: grid;
+        gap: 10px;
+      }}
+      .label {{
+        font-size: 0.78rem;
+        color: #6a6456;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }}
+      .text {{
+        white-space: pre-wrap;
+        word-break: break-word;
+      }}
+      .foot {{
+        margin-top: 14px;
+        font-size: 0.82rem;
+        color: #686251;
+      }}
+    </style>
+  </head>
+  <body>
+    <article class="wrap">
+      <header class="head">
+        <h1>{title}</h1>
+        <div class="meta">{html.escape(task_type)} · {html.escape(air_date)} · {status}</div>
+        <div>
+          <span class="chip">Campaign: {campaign_name}</span>
+          <span class="chip">Assignee: {assignee_name}</span>
+        </div>
+      </header>
+      <section class="body">
+        <div class="assets">{assets_html}</div>
+        <div class="content">
+          <div><div class="label">Caption</div><div class="text">{caption_html}</div></div>
+          <div><div class="label">Hashtags</div><div class="text">{hashtags_html}</div></div>
+          <div><div class="label">Mentions</div><div class="text">{mentions_html}</div></div>
+        </div>
+        <p class="foot">This is a read-only public preview link. Expires at {html.escape(expires_text)} (+07).</p>
+      </section>
+    </article>
+  </body>
+</html>"""
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -348,12 +587,51 @@ def root_redirect():
 @app.get("/dashboard", include_in_schema=False)
 @app.get("/dashboard/campaigns", include_in_schema=False)
 @app.get("/dashboard/users", include_in_schema=False)
+@app.get("/dashboard/task/{task_id}", include_in_schema=False)
 @app.get("/dashboard/tasks/{task_id}", include_in_schema=False)
 def dashboard_page(task_id: str | None = None):
     _ = task_id
     if FRONTEND_INDEX_FILE.exists():
         return FileResponse(FRONTEND_INDEX_FILE)
     return FileResponse(UI_DIR / "dashboard.html")
+
+
+@app.get("/preview/{token}", include_in_schema=False, response_class=HTMLResponse)
+def public_preview_page(token: str, db: Session = Depends(get_db)):
+    payload, error = resolve_public_preview_task(db, token)
+    if error:
+        if error == "expired_token":
+            return HTMLResponse(
+                _render_public_preview_error_page(
+                    "Preview link expired",
+                    "Liên kết preview đã hết hạn. Vui lòng yêu cầu link mới từ team Social.",
+                ),
+                status_code=410,
+            )
+        if error == "revoked_token":
+            return HTMLResponse(
+                _render_public_preview_error_page(
+                    "Preview link revoked",
+                    "Liên kết preview đã bị thu hồi. Vui lòng yêu cầu link mới từ team Social.",
+                ),
+                status_code=410,
+            )
+        if error == "task_not_found":
+            return HTMLResponse(
+                _render_public_preview_error_page(
+                    "Task not found",
+                    "Task tương ứng không còn tồn tại.",
+                ),
+                status_code=404,
+            )
+        return HTMLResponse(
+            _render_public_preview_error_page(
+                "Invalid preview link",
+                "Liên kết preview không hợp lệ hoặc đã bị thay thế.",
+            ),
+            status_code=404,
+        )
+    return HTMLResponse(_render_public_preview_page(payload), status_code=200)
 
 
 @app.post("/auth/login")
@@ -730,6 +1008,33 @@ def get_task_api(task_id: str, db: Session = Depends(get_db), _: Principal = Dep
     except ValueError:
         raise HTTPException(status_code=404, detail="task_not_found")
     return task_to_response(task)
+
+
+@app.get("/tasks/{task_id}/preview-link", response_model=TaskPreviewLinkOut)
+def get_task_preview_link_api(
+    task_id: str,
+    db: Session = Depends(get_db),
+    _: Principal = Depends(get_current_principal),
+):
+    try:
+        return TaskPreviewLinkOut(**get_task_preview_link(db, task_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="task_not_found")
+
+
+@app.post("/tasks/{task_id}/preview-link", response_model=TaskPreviewLinkOut)
+def regenerate_task_preview_link_api(
+    task_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_current_principal),
+):
+    actor = get_user_by_principal(db, principal.user_id, principal.username)
+    actor_id = actor.id if actor else None
+    try:
+        payload = regenerate_task_preview_link(db, task_id, actor_id=actor_id)
+        return TaskPreviewLinkOut(**payload)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="task_not_found")
 
 
 @app.patch("/tasks/{task_id}", response_model=TaskOut)

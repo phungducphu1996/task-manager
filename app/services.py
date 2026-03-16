@@ -9,12 +9,13 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.config import DASHBOARD_BASE_URL, SOCIAL_GROUP_CHAT_ID
+from app.config import DASHBOARD_BASE_URL, PUBLIC_PREVIEW_BASE_URL, SOCIAL_GROUP_CHAT_ID
 from app.jobs import schedule_task_jobs
 from app.models import (
     Campaign,
@@ -29,6 +30,7 @@ from app.models import (
     TaskActivityLog,
     TaskChecklistItem,
     TaskComment,
+    TaskPreviewToken,
     User,
 )
 from app.notifier import send_text
@@ -41,6 +43,7 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_CAMPAIGN_COLOR = "#d8d2bc"
 DEFAULT_CAMPAIGN_ICON = "📌"
+PREVIEW_TOKEN_TTL_DAYS = 7
 
 
 def _to_utc(value: datetime | None) -> datetime | None:
@@ -81,6 +84,60 @@ def _pick_preview_image_url(task: SocialTask) -> str | None:
     if any_image:
         return any_image.url
     return task.assets[0].url
+
+
+def _preview_base_url() -> str:
+    configured = str(PUBLIC_PREVIEW_BASE_URL or "").strip().rstrip("/")
+    if configured:
+        return configured
+    base = str(DASHBOARD_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return ""
+    suffix = "/dashboard/tasks"
+    if base.endswith(suffix):
+        return base[: -len(suffix)]
+    parsed = urlsplit(base)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return base
+
+
+def _build_public_preview_url(token: str) -> str:
+    base = _preview_base_url()
+    token_clean = str(token or "").strip()
+    if not token_clean:
+        return ""
+    if base:
+        return f"{base}/preview/{token_clean}"
+    return f"/preview/{token_clean}"
+
+
+def _hash_preview_token(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _serialize_preview_link(task_id: str, row: TaskPreviewToken | None) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    if not row:
+        return {
+            "task_id": task_id,
+            "preview_url": None,
+            "expires_at": None,
+            "is_active": False,
+            "is_expired": False,
+            "is_revoked": False,
+        }
+    is_revoked = row.revoked_at is not None
+    is_expired = row.expires_at <= now
+    is_active = (not is_revoked) and (not is_expired)
+    return {
+        "task_id": task_id,
+        "preview_url": _build_public_preview_url(row.token) if is_active else None,
+        "expires_at": row.expires_at,
+        "is_active": is_active,
+        "is_expired": is_expired,
+        "is_revoked": is_revoked,
+    }
 
 
 def _normalize_campaign_color(value: str | None) -> str | None:
@@ -1412,6 +1469,123 @@ def task_to_response(task: SocialTask) -> dict:
         "activity_logs": sorted(task.activity_logs, key=lambda log: log.created_at),
         "validate": {"ok": validation.ok, "missing_fields": validation.missing_fields},
     }
+
+
+def get_task_preview_link(db: Session, task_id: str) -> dict[str, Any]:
+    task = db.get(SocialTask, task_id)
+    if not task:
+        raise ValueError("task_not_found")
+    token_row = (
+        db.execute(
+            select(TaskPreviewToken)
+            .where(TaskPreviewToken.task_id == task_id)
+            .order_by(TaskPreviewToken.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+    return _serialize_preview_link(task_id, token_row)
+
+
+def regenerate_task_preview_link(db: Session, task_id: str, actor_id: str | None = None) -> dict[str, Any]:
+    task = db.get(SocialTask, task_id)
+    if not task:
+        raise ValueError("task_not_found")
+
+    now = datetime.now(timezone.utc)
+    existing_tokens = (
+        db.execute(
+            select(TaskPreviewToken).where(
+                TaskPreviewToken.task_id == task_id,
+                TaskPreviewToken.revoked_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in existing_tokens:
+        row.revoked_at = now
+
+    raw_token = secrets.token_urlsafe(32)
+    token_row = TaskPreviewToken(
+        task_id=task_id,
+        token=raw_token,
+        token_hash=_hash_preview_token(raw_token),
+        expires_at=now + timedelta(days=PREVIEW_TOKEN_TTL_DAYS),
+        revoked_at=None,
+        created_by=actor_id,
+    )
+    db.add(token_row)
+    db.commit()
+    db.refresh(token_row)
+    return _serialize_preview_link(task_id, token_row)
+
+
+def resolve_public_preview_task(db: Session, token: str) -> tuple[dict[str, Any] | None, str | None]:
+    clean_token = str(token or "").strip()
+    if not clean_token:
+        return None, "invalid_token"
+
+    token_hash = _hash_preview_token(clean_token)
+    row = (
+        db.execute(
+            select(TaskPreviewToken)
+            .where(TaskPreviewToken.token_hash == token_hash)
+            .order_by(TaskPreviewToken.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+    if not row:
+        return None, "invalid_token"
+
+    if row.revoked_at is not None:
+        return None, "revoked_token"
+    if row.expires_at <= datetime.now(timezone.utc):
+        return None, "expired_token"
+
+    task = (
+        db.execute(
+            select(SocialTask)
+            .where(SocialTask.id == row.task_id)
+            .options(
+                joinedload(SocialTask.assets),
+                joinedload(SocialTask.campaign),
+                joinedload(SocialTask.assignee),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if not task:
+        return None, "task_not_found"
+
+    payload = {
+        "id": task.id,
+        "title": task.title,
+        "type": task.type,
+        "status": task.status,
+        "air_date": _to_local(task.air_date),
+        "caption": task.caption or "",
+        "quick_note": task.quick_note or "",
+        "hashtags": task.hashtags or [],
+        "mentions": task.mentions or [],
+        "campaign_name": task.campaign.name if task.campaign else None,
+        "campaign_color": task.campaign.color if task.campaign else None,
+        "campaign_icon": task.campaign.icon if task.campaign else None,
+        "assignee_name": task.assignee.name if task.assignee else None,
+        "assets": [
+            {
+                "id": asset.id,
+                "kind": asset.kind,
+                "url": asset.url,
+            }
+            for asset in task.assets
+            if not _is_demo_asset_url(asset.url)
+        ],
+        "token_expires_at": row.expires_at,
+    }
+    return payload, None
 
 
 def list_collections(db: Session) -> list[Collection]:

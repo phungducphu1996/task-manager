@@ -413,6 +413,15 @@ class ReminderRunResponse(BaseModel):
     results: list[ReminderJobResult]
 
 
+class TaskPreviewLinkOut(BaseModel):
+    task_id: str
+    preview_url: str | None = None
+    expires_at: datetime | None = None
+    is_active: bool = False
+    is_expired: bool = False
+    is_revoked: bool = False
+
+
 class AnalyticsBasic(BaseModel):
     total_this_week: int
     overdue_count: int

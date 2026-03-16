@@ -3,8 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 
 const AUTH_STORAGE_KEY = 'social_shared_auth'
 const TIMELINE_PREFS_KEY = 'social_timeline_prefs_v1'
-const TASK_NO_MEDIA_COLORS_KEY = 'social_timeline_task_no_media_colors_v1'
-const DEFAULT_TIMELINE_NO_MEDIA_BG = '#f2f0e2'
 const DEFAULT_CAMPAIGN_COLOR = '#d8d2bc'
 const DEFAULT_CAMPAIGN_ICON = '📌'
 const QUICK_NOTE_MAX_LENGTH = 256
@@ -59,8 +57,7 @@ const failedTimelineThumbs = ref(new Set())
 const timelineViewportRef = ref(null)
 const timelinePrefs = reactive({
   dayWidth: 220,
-  cardScale: 120,
-  noMediaBg: DEFAULT_TIMELINE_NO_MEDIA_BG
+  cardScale: 120
 })
 const timelinePanState = reactive({
   active: false,
@@ -68,7 +65,6 @@ const timelinePanState = reactive({
   startScrollLeft: 0
 })
 const timelineAutoFocusDone = ref(false)
-const taskNoMediaColors = ref({})
 const notePreview = reactive({
   open: false,
   taskId: '',
@@ -78,6 +74,13 @@ const notePreview = reactive({
   airDate: null,
   source: '',
   saving: false
+})
+const previewDevice = ref('mobile')
+const previewCarouselIndex = ref(0)
+const previewLinkState = reactive({
+  loading: false,
+  generating: false,
+  data: null
 })
 
 const toast = reactive({
@@ -367,7 +370,7 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function sanitizeHexColor(value, fallback = DEFAULT_TIMELINE_NO_MEDIA_BG) {
+function sanitizeHexColor(value, fallback = '#f2f0e2') {
   const raw = String(value || '').trim()
   return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw.toLowerCase() : fallback
 }
@@ -423,6 +426,30 @@ function commentDisplayText(comment) {
 
 function commentMediaUrls(comment) {
   return parseCommentContent(comment?.content).media
+}
+
+function previewCaptionText() {
+  const raw = String(contentForm.caption || selectedTask.value?.caption || '').trim()
+  return raw
+}
+
+function previewHashtagText() {
+  const parsed = parseSpaceList(contentForm.hashtags || (selectedTask.value?.hashtags || []).join(' '))
+  return parsed.join(' ')
+}
+
+function previewMentionText() {
+  const parsed = parseSpaceList(contentForm.mentions || (selectedTask.value?.mentions || []).join(' '))
+  return parsed.join(' ')
+}
+
+function previewPackageText() {
+  const lines = [
+    previewCaptionText(),
+    previewHashtagText(),
+    previewMentionText()
+  ].filter(Boolean)
+  return lines.join('\n').trim()
 }
 
 function previewQuickNote(value, maxLength = 84) {
@@ -512,53 +539,9 @@ function loadTimelinePrefs() {
     const parsed = JSON.parse(raw)
     timelinePrefs.dayWidth = clamp(Number(parsed?.dayWidth || timelinePrefs.dayWidth), 140, 320)
     timelinePrefs.cardScale = clamp(Number(parsed?.cardScale || timelinePrefs.cardScale), 90, 200)
-    timelinePrefs.noMediaBg = sanitizeHexColor(parsed?.noMediaBg, timelinePrefs.noMediaBg)
   } catch {
     // ignore invalid localStorage
   }
-}
-
-function loadTaskNoMediaColors() {
-  try {
-    const raw = localStorage.getItem(TASK_NO_MEDIA_COLORS_KEY)
-    if (!raw) return
-    const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return
-    const cleaned = Object.fromEntries(
-      Object.entries(parsed)
-        .filter(([taskId]) => Boolean(String(taskId || '').trim()))
-        .map(([taskId, color]) => [taskId, sanitizeHexColor(color)])
-    )
-    taskNoMediaColors.value = cleaned
-  } catch {
-    // ignore invalid localStorage
-  }
-}
-
-function getTaskNoMediaColor(taskId) {
-  const taskKey = String(taskId || '')
-  const raw = taskNoMediaColors.value[taskKey]
-  if (!raw) return timelinePrefs.noMediaBg
-  return sanitizeHexColor(raw, timelinePrefs.noMediaBg)
-}
-
-function setTaskNoMediaColor(taskId, color) {
-  const taskKey = String(taskId || '')
-  if (!taskKey) return
-  taskNoMediaColors.value = {
-    ...taskNoMediaColors.value,
-    [taskKey]: sanitizeHexColor(color, timelinePrefs.noMediaBg)
-  }
-}
-
-function notePreviewColor() {
-  if (!notePreview.taskId) return timelinePrefs.noMediaBg
-  return getTaskNoMediaColor(notePreview.taskId)
-}
-
-function onNotePreviewColorChange(color) {
-  if (!notePreview.taskId) return
-  setTaskNoMediaColor(notePreview.taskId, color)
 }
 
 function focusTimelineToToday() {
@@ -580,7 +563,7 @@ function tryAutoFocusTimeline() {
 
 function startTimelinePan(event) {
   if (event.button !== 0) return
-  if (event.target?.closest?.('.timeline-item, .timeline-create-overlay, .timeline-create-btn, .timeline-card-color, button, input, textarea, select, a, label')) return
+  if (event.target?.closest?.('.timeline-item, .timeline-create-overlay, .timeline-create-btn, button, input, textarea, select, a, label')) return
   if (!timelineViewportRef.value) return
   timelinePanState.active = true
   timelinePanState.startX = event.clientX
@@ -1419,6 +1402,36 @@ const selectedTaskAssets = computed(() => {
   return (selectedTask.value?.assets || []).filter((item) => !isDemoAssetUrl(item.url))
 })
 
+const previewAssets = computed(() => selectedTaskAssets.value)
+
+const previewCurrentIndex = computed(() => {
+  return clamp(previewCarouselIndex.value, 0, Math.max(previewAssets.value.length - 1, 0))
+})
+
+const previewCurrentAsset = computed(() => {
+  if (previewAssets.value.length === 0) return null
+  return previewAssets.value[previewCurrentIndex.value] || null
+})
+
+const previewQuickNoteText = computed(() => {
+  return normalizeQuickNote(contentForm.quick_note || selectedTask.value?.quick_note || '')
+})
+
+const previewBodyText = computed(() => {
+  const parts = [previewCaptionText(), previewHashtagText(), previewMentionText()].filter(Boolean)
+  return parts.join('\n')
+})
+
+const previewPublicUrl = computed(() => {
+  const raw = String(previewLinkState.data?.preview_url || '').trim()
+  if (!raw) return ''
+  try {
+    return new URL(raw, window.location.origin).toString()
+  } catch {
+    return raw
+  }
+})
+
 const campaignOptions = computed(() => {
   const rows = [...campaigns.value].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
   const current = contentForm.campaign_name.trim()
@@ -1590,12 +1603,10 @@ const timeline = computed(() => {
       return {
         ...task,
         media_thumbnail: summary?.media_thumbnail || task.media_thumbnail || null,
-        no_media_bg: getTaskNoMediaColor(task.id),
         style: {
           top: `${laneTopOffset + lane * rowHeight}px`,
           left: `${dayIndex * dayWidth + 8}px`,
-          width: `${widthPx}px`,
-          '--timeline-card-no-media-bg': getTaskNoMediaColor(task.id)
+          width: `${widthPx}px`
         }
       }
     })
@@ -1706,6 +1717,8 @@ function openCreateInColumn(defaultStatus = 'idea') {
   detailOpen.value = true
   selectedTask.value = null
   selectedTaskId.value = null
+  previewLinkState.data = null
+  previewCarouselIndex.value = 0
   activeTab.value = 'content'
   resetDetailDraft(defaultStatus)
   window.history.pushState({}, '', dashboardBasePath())
@@ -1728,6 +1741,8 @@ async function openTask(taskId, push = true) {
     selectedTaskId.value = task.id
     detailOpen.value = true
     activeTab.value = 'content'
+    previewCarouselIndex.value = 0
+    previewLinkState.data = null
 
     const summary = summaryById.value.get(task.id)
     contentForm.title = task.title || ''
@@ -1766,6 +1781,8 @@ function closeDetail() {
   selectedTask.value = null
   selectedTaskId.value = null
   closeNotePreview()
+  previewLinkState.data = null
+  previewCarouselIndex.value = 0
   clearPendingMedia(detailPendingMedia)
   clearPendingMedia(commentPendingMedia)
   window.history.pushState({}, '', dashboardBasePath())
@@ -1777,6 +1794,105 @@ async function refreshAndKeepDetail() {
   if (current) {
     await openTask(current, false)
   }
+}
+
+function previewMediaKind(asset) {
+  return String(asset?.kind || '').toLowerCase() === 'video' ? 'video' : 'image'
+}
+
+function previewMediaLabel() {
+  return `${previewCurrentIndex.value + 1}/${Math.max(previewAssets.value.length, 1)}`
+}
+
+function previewPrevMedia() {
+  if (previewAssets.value.length <= 1) return
+  previewCarouselIndex.value = (previewCurrentIndex.value - 1 + previewAssets.value.length) % previewAssets.value.length
+}
+
+function previewNextMedia() {
+  if (previewAssets.value.length <= 1) return
+  previewCarouselIndex.value = (previewCurrentIndex.value + 1) % previewAssets.value.length
+}
+
+async function copyPreviewPackage() {
+  const packageText = previewPackageText()
+  if (!packageText) {
+    showToast('No content to copy yet', true)
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(packageText)
+    showToast('Post package copied')
+  } catch {
+    showToast('Copy failed', true)
+  }
+}
+
+function triggerMediaDownload(url) {
+  const clean = String(url || '').trim()
+  if (!clean) return
+  const anchor = document.createElement('a')
+  anchor.href = clean
+  anchor.download = assetFileName(clean)
+  anchor.target = '_blank'
+  anchor.rel = 'noopener noreferrer'
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+}
+
+function downloadCurrentPreviewMedia() {
+  if (!previewCurrentAsset.value?.url) {
+    showToast('No media to download', true)
+    return
+  }
+  triggerMediaDownload(previewCurrentAsset.value.url)
+}
+
+function downloadAllPreviewMedia() {
+  if (previewAssets.value.length === 0) {
+    showToast('No media to download', true)
+    return
+  }
+  previewAssets.value.forEach((asset, index) => {
+    setTimeout(() => triggerMediaDownload(asset.url), index * 180)
+  })
+  showToast(`Downloading ${previewAssets.value.length} file(s)`)
+}
+
+async function loadTaskPreviewLink() {
+  if (createMode.value || !selectedTaskId.value) return
+  try {
+    previewLinkState.loading = true
+    previewLinkState.data = await requestJson(`/tasks/${selectedTaskId.value}/preview-link`)
+  } catch {
+    previewLinkState.data = null
+  } finally {
+    previewLinkState.loading = false
+  }
+}
+
+async function regenerateTaskPreviewLinkAction() {
+  if (createMode.value || !selectedTaskId.value) return
+  try {
+    previewLinkState.generating = true
+    previewLinkState.data = await requestJson(`/tasks/${selectedTaskId.value}/preview-link`, {
+      method: 'POST'
+    })
+    showToast('Public preview link generated')
+  } catch (error) {
+    showToast(`Generate link failed (${error.message})`, true)
+  } finally {
+    previewLinkState.generating = false
+  }
+}
+
+function openPreviewPublicLink() {
+  if (!previewPublicUrl.value) {
+    showToast('No active preview link', true)
+    return
+  }
+  window.open(previewPublicUrl.value, '_blank', 'noopener,noreferrer')
 }
 
 async function updateTaskStatus(taskId, status) {
@@ -2026,7 +2142,7 @@ function openFromPath() {
     return
   }
   activeView.value = 'overview'
-  const match = window.location.pathname.match(/^\/dashboard\/tasks\/([^/]+)$/)
+  const match = window.location.pathname.match(/^\/dashboard\/tasks?\/([^/]+)$/)
   if (match) {
     openTask(match[1], false)
   }
@@ -2034,7 +2150,6 @@ function openFromPath() {
 
 onMounted(async () => {
   loadTimelinePrefs()
-  loadTaskNoMediaColors()
 
   const rawAuth = localStorage.getItem(AUTH_STORAGE_KEY)
   if (rawAuth) {
@@ -2058,14 +2173,13 @@ onMounted(async () => {
 })
 
 watch(
-  () => [timelinePrefs.dayWidth, timelinePrefs.cardScale, timelinePrefs.noMediaBg],
-  ([dayWidth, cardScale, noMediaBg]) => {
+  () => [timelinePrefs.dayWidth, timelinePrefs.cardScale],
+  ([dayWidth, cardScale]) => {
     localStorage.setItem(
       TIMELINE_PREFS_KEY,
       JSON.stringify({
         dayWidth: clamp(Number(dayWidth), 140, 320),
         cardScale: clamp(Number(cardScale), 90, 200),
-        noMediaBg: sanitizeHexColor(noMediaBg),
       })
     )
   }
@@ -2081,11 +2195,31 @@ watch(
 )
 
 watch(
-  taskNoMediaColors,
-  (map) => {
-    localStorage.setItem(TASK_NO_MEDIA_COLORS_KEY, JSON.stringify(map || {}))
-  },
-  { deep: true }
+  () => selectedTaskId.value,
+  () => {
+    previewCarouselIndex.value = 0
+  }
+)
+
+watch(
+  () => previewAssets.value.length,
+  (length) => {
+    if (length <= 0) {
+      previewCarouselIndex.value = 0
+      return
+    }
+    previewCarouselIndex.value = clamp(previewCarouselIndex.value, 0, length - 1)
+  }
+)
+
+watch(
+  () => [activeTab.value, selectedTaskId.value, createMode.value],
+  ([tab, taskId, isCreate]) => {
+    if (isCreate || !taskId) return
+    if (tab === 'preview') {
+      loadTaskPreviewLink()
+    }
+  }
 )
 
 onUnmounted(() => {
@@ -2302,10 +2436,6 @@ onUnmounted(() => {
                   Card Size
                   <input v-model.number="timelinePrefs.cardScale" type="range" min="90" max="200" step="5" />
                 </label>
-                <label class="timeline-color-control">
-                  No Media Color
-                  <input v-model="timelinePrefs.noMediaBg" type="color" />
-                </label>
               </div>
             </div>
             <div
@@ -2322,8 +2452,7 @@ onUnmounted(() => {
                 :style="{
                   '--timeline-day-width': `${timeline.dayWidth}px`,
                   '--timeline-card-height': `${timeline.cardHeight}px`,
-                  '--timeline-media-height': `${timeline.mediaHeight}px`,
-                  '--timeline-no-media-bg': timelinePrefs.noMediaBg
+                  '--timeline-media-height': `${timeline.mediaHeight}px`
                 }"
               >
                 <div
@@ -2410,16 +2539,6 @@ onUnmounted(() => {
                         <span class="timeline-type-chip" :class="typeClass(task.type)">
                           {{ String(task.type || '').toUpperCase() || 'POST' }}
                         </span>
-                        <label v-if="!isTimelineThumbVisible(task.media_thumbnail)" class="timeline-card-color" title="Card color">
-                          <input
-                            :value="task.no_media_bg"
-                            type="color"
-                            @click.stop
-                            @mousedown.stop
-                            @keydown.stop
-                            @input="setTaskNoMediaColor(task.id, $event.target.value)"
-                          />
-                        </label>
                       </div>
                     </div>
                     <div class="timeline-media-frame" :class="typeClass(task.type)">
@@ -2635,19 +2754,6 @@ onUnmounted(() => {
             <option value="post">Post</option>
           </select>
         </label>
-        <p class="subtle">
-          {{ createMode
-            ? `${String(createType || '').toUpperCase()} · ${contentForm.air_date ? fmtDate(contentForm.air_date) : 'No air date'}`
-            : `${String(selectedTask?.type || '').toUpperCase()} · ${fmtDate(selectedTask?.air_date)} · ${statusLabels[selectedTask?.status] || selectedTask?.status || ''}` }}
-        </p>
-        <label v-if="!createMode && selectedTaskId" class="status-combo detail-no-media-color">
-          <span>No-media color</span>
-          <input
-            :value="getTaskNoMediaColor(selectedTaskId)"
-            type="color"
-            @input="setTaskNoMediaColor(selectedTaskId, $event.target.value)"
-          />
-        </label>
       </div>
 
       <div class="detail-tabs">
@@ -2655,6 +2761,7 @@ onUnmounted(() => {
         <button type="button" class="tab-btn" :class="{ active: activeTab === 'media' }" @click="activeTab = 'media'">Media</button>
         <button v-if="!createMode" type="button" class="tab-btn" :class="{ active: activeTab === 'comments' }" @click="activeTab = 'comments'">Comments</button>
         <button v-if="!createMode" type="button" class="tab-btn" :class="{ active: activeTab === 'activity' }" @click="activeTab = 'activity'">History</button>
+        <button v-if="!createMode" type="button" class="tab-btn" :class="{ active: activeTab === 'preview' }" @click="activeTab = 'preview'">Preview</button>
       </div>
 
       <div v-show="activeTab === 'content'" class="tab-panel active">
@@ -2895,6 +3002,76 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <div v-if="!createMode" v-show="activeTab === 'preview'" class="tab-panel active">
+        <div class="preview-toolbar">
+          <div class="preview-device-switch">
+            <button class="switch" :class="{ active: previewDevice === 'desktop' }" type="button" @click="previewDevice = 'desktop'">Desktop</button>
+            <button class="switch" :class="{ active: previewDevice === 'mobile' }" type="button" @click="previewDevice = 'mobile'">Mobile</button>
+          </div>
+          <div class="preview-actions">
+            <button class="ghost-btn" type="button" @click="copyPreviewPackage">Copy Content</button>
+            <button class="ghost-btn" type="button" @click="downloadCurrentPreviewMedia" :disabled="!previewCurrentAsset">Download current</button>
+            <button class="ghost-btn" type="button" @click="downloadAllPreviewMedia" :disabled="previewAssets.length === 0">Download all</button>
+            <button class="ghost-btn" type="button" :disabled="previewLinkState.generating" @click="regenerateTaskPreviewLinkAction">
+              {{ previewLinkState.generating ? 'Generating...' : (previewLinkState.data?.is_active ? 'Regenerate Link' : 'Generate Link') }}
+            </button>
+            <button class="ghost-btn" type="button" :disabled="!previewPublicUrl" @click="openPreviewPublicLink">Open Public Link</button>
+          </div>
+        </div>
+
+        <p class="meta preview-link-meta">
+          <template v-if="previewLinkState.loading">Loading preview link...</template>
+          <template v-else-if="previewLinkState.data?.is_active && previewPublicUrl">
+            Active link: <a :href="previewPublicUrl" target="_blank" rel="noopener noreferrer">{{ previewPublicUrl }}</a>
+            · expires {{ fmtDate(previewLinkState.data.expires_at) }}
+          </template>
+          <template v-else>No active public preview link.</template>
+        </p>
+
+        <div class="ig-preview-shell" :class="[`device-${previewDevice}`, `type-${selectedTask?.type || 'post'}`]">
+          <header class="ig-preview-head">
+            <div class="ig-preview-user">
+              <span class="timeline-platform">IG</span>
+              <strong>{{ selectedTask?.assignee_name || selectedTask?.assignee || 'Content Team' }}</strong>
+            </div>
+            <span class="ig-preview-type">{{ String(selectedTask?.type || '').toUpperCase() || 'POST' }}</span>
+          </header>
+
+          <div class="ig-preview-media-wrap" :class="{ story: selectedTask?.type === 'story' }">
+            <template v-if="previewCurrentAsset">
+              <img
+                v-if="previewMediaKind(previewCurrentAsset) === 'image'"
+                class="ig-preview-media"
+                :src="previewCurrentAsset.url"
+                alt=""
+              />
+              <video
+                v-else
+                class="ig-preview-media"
+                :src="previewCurrentAsset.url"
+                controls
+                playsinline
+              ></video>
+            </template>
+            <template v-else>
+              <div class="ig-preview-no-media">
+                {{ previewQuickNoteText || 'No media yet' }}
+              </div>
+            </template>
+          </div>
+
+          <div v-if="previewAssets.length > 1" class="ig-preview-carousel-controls">
+            <button class="ghost-btn" type="button" @click="previewPrevMedia">Prev</button>
+            <span>{{ previewMediaLabel() }}</span>
+            <button class="ghost-btn" type="button" @click="previewNextMedia">Next</button>
+          </div>
+
+          <p v-if="selectedTask?.type !== 'story'" class="ig-preview-caption">
+            {{ previewBodyText || previewQuickNoteText || 'No caption yet' }}
+          </p>
+        </div>
+      </div>
+
       <div v-if="!createMode" v-show="activeTab === 'activity'" class="tab-panel active">
         <div class="list-shell">
           <article v-for="log in (selectedTask?.activity_logs || []).slice().sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))" :key="log.id" class="list-item">
@@ -2920,15 +3097,6 @@ onUnmounted(() => {
         <p class="meta note-preview-meta">
           {{ notePreview.title }} · {{ notePreview.airDate ? fmtDate(notePreview.airDate) : 'No air date' }}
         </p>
-        <div v-if="notePreview.taskId" class="note-color-row">
-          <span class="meta">Card color</span>
-          <input
-            :value="notePreviewColor()"
-            class="note-color-input"
-            type="color"
-            @input="onNotePreviewColorChange($event.target.value)"
-          />
-        </div>
         <textarea
           v-model="notePreview.draft"
           class="note-preview-input"
