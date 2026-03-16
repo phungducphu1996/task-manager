@@ -16,7 +16,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import DASHBOARD_BASE_URL, PUBLIC_PREVIEW_BASE_URL, SOCIAL_GROUP_CHAT_ID
-from app.jobs import schedule_task_jobs
 from app.models import (
     Campaign,
     Collection,
@@ -44,6 +43,14 @@ HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_CAMPAIGN_COLOR = "#d8d2bc"
 DEFAULT_CAMPAIGN_ICON = "📌"
 PREVIEW_TOKEN_TTL_DAYS = 7
+PREVIEW_EVENT_READY = "task_preview_ready_link"
+PREVIEW_EVENT_T_MINUS_1H = "task_preview_t_minus_1h_link"
+PREVIEW_REASON_READY = "ready_no_missing"
+PREVIEW_REASON_T_MINUS_1H = "t_minus_1h"
+PREVIEW_EVENT_BY_REASON = {
+    PREVIEW_REASON_READY: PREVIEW_EVENT_READY,
+    PREVIEW_REASON_T_MINUS_1H: PREVIEW_EVENT_T_MINUS_1H,
+}
 
 
 def _to_utc(value: datetime | None) -> datetime | None:
@@ -663,6 +670,194 @@ def _notification_recipient_label(group_chat_id: str | None = None, user_zalo_id
     return "unknown"
 
 
+def _campaign_requires_product_url(task: SocialTask) -> bool:
+    return bool(task.campaign and task.campaign.requires_product_url)
+
+
+def _task_is_publish_ready(task: SocialTask) -> bool:
+    return validate_task(task, _campaign_requires_product_url(task)).ok
+
+
+def _preview_event_already_sent(db: Session, task_id: str, event_type: str) -> bool:
+    rows = (
+        db.execute(
+            select(NotificationLog)
+            .where(NotificationLog.task_id == task_id, NotificationLog.status == "sent")
+            .order_by(NotificationLog.created_at.desc())
+            .limit(200)
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        payload = row.payload or {}
+        if isinstance(payload, dict) and payload.get("event_type") == event_type:
+            return True
+    return False
+
+
+def send_preview_link_notification(
+    db: Session,
+    *,
+    task: SocialTask,
+    reason: str,
+    actor: User | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event_type = PREVIEW_EVENT_BY_REASON.get(reason)
+    if not event_type:
+        raise ValueError("invalid_preview_reason")
+
+    if _preview_event_already_sent(db, task.id, event_type):
+        return {
+            "ok": True,
+            "event_type": event_type,
+            "reason": reason,
+            "skipped": "already_sent",
+            "sent": 0,
+            "failed": 0,
+        }
+
+    preview_link = get_task_preview_link(db, task.id)
+    if not preview_link.get("is_active"):
+        preview_link = regenerate_task_preview_link(db, task.id, actor_id=actor.id if actor else None)
+    preview_url = str(preview_link.get("preview_url") or "").strip()
+
+    reason_text = "Task đã đủ điều kiện đăng" if reason == PREVIEW_REASON_READY else "Nhắc trước giờ đăng 1 tiếng"
+    type_text = str(task.type or "task").upper()
+    actor_name = actor.name if actor and actor.name else (actor.username if actor and actor.username else "Hệ thống")
+    message = (
+        f"🔗 Preview link sẵn sàng\n"
+        f"Task: {task.title} ({type_text})\n"
+        f"Lý do: {reason_text}\n"
+        f"Cập nhật bởi: {actor_name}\n"
+        f"{preview_url or '(missing preview url)'}"
+    )
+
+    zalo_settings = get_zalo_settings(db)
+    group_chat_id = str(zalo_settings.get("social_group_chat_id") or "").strip()
+    assignee = task.assignee
+    assignee_zalo_id = str(assignee.zalo_user_id).strip() if assignee and assignee.zalo_user_id else ""
+    assignee_name = assignee.name if assignee and assignee.name else "assignee"
+    mentions = [{"text": assignee_name, "zalo_user_id": assignee_zalo_id}] if assignee_zalo_id else [{"text": assignee_name}]
+
+    targets: list[dict[str, Any]] = []
+    if group_chat_id:
+        group_target: dict[str, Any] = {"group_chat_id": group_chat_id}
+        if assignee:
+            group_target["mentions"] = mentions
+        targets.append(group_target)
+    if assignee_zalo_id:
+        targets.append({"user_zalo_id": assignee_zalo_id})
+
+    sent = 0
+    failed = 0
+    results: list[dict[str, Any]] = []
+
+    if not targets:
+        db.add(
+            NotificationLog(
+                task_id=task.id,
+                channel="zalo",
+                recipient=None,
+                message=message,
+                payload={
+                    "event_type": event_type,
+                    "reason": reason,
+                    "preview_url": preview_url,
+                    "context": context or {},
+                    "error": "missing_routing_target",
+                },
+                status="failed",
+            )
+        )
+        db.commit()
+        return {
+            "ok": False,
+            "event_type": event_type,
+            "reason": reason,
+            "sent": 0,
+            "failed": 1,
+            "error": "missing_routing_target",
+        }
+
+    for target in targets:
+        target_payload = {
+            "group_chat_id": target.get("group_chat_id"),
+            "user_zalo_id": target.get("user_zalo_id"),
+            "mentions": target.get("mentions") or [],
+        }
+        try:
+            worker_result = send_text(message, target=target_payload, event_type=event_type)
+        except Exception as exc:  # pragma: no cover - safety net
+            worker_result = {"ok": False, "error": "zalo_send_exception", "detail": str(exc)}
+
+        status = "sent" if worker_result.get("ok") else "failed"
+        if status == "sent":
+            sent += 1
+        else:
+            failed += 1
+
+        db.add(
+            NotificationLog(
+                task_id=task.id,
+                channel="zalo",
+                recipient=_notification_recipient_label(
+                    group_chat_id=target_payload.get("group_chat_id"),
+                    user_zalo_id=target_payload.get("user_zalo_id"),
+                ),
+                message=message,
+                payload={
+                    "event_type": event_type,
+                    "reason": reason,
+                    "preview_url": preview_url,
+                    "target": target_payload,
+                    "context": context or {},
+                    "worker_result": worker_result,
+                },
+                status=status,
+            )
+        )
+        results.append(
+            {
+                "target": target_payload,
+                "status": status,
+                "worker_result": worker_result,
+            }
+        )
+
+    db.commit()
+    return {
+        "ok": failed == 0,
+        "event_type": event_type,
+        "reason": reason,
+        "sent": sent,
+        "failed": failed,
+        "preview_url": preview_url,
+        "results": results,
+    }
+
+
+def maybe_send_ready_preview_link(
+    db: Session,
+    *,
+    before_valid: bool,
+    task: SocialTask,
+    actor: User | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    after_valid = _task_is_publish_ready(task)
+    if before_valid or not after_valid:
+        return {"ok": True, "skipped": "no_invalid_to_valid_transition", "reason": PREVIEW_REASON_READY}
+    return send_preview_link_notification(
+        db,
+        task=task,
+        reason=PREVIEW_REASON_READY,
+        actor=actor,
+        context=context,
+    )
+
+
 def send_zalo_test_notification(
     db: Session,
     *,
@@ -953,6 +1148,8 @@ def create_task(db: Session, payload: TaskCreate) -> SocialTask:
     log_activity(db, task.id, action="task_created", actor_id=creator.id if creator else None)
 
     if task.air_date:
+        from app.jobs import schedule_task_jobs
+
         schedule_task_jobs(db, task)
 
     db.commit()
@@ -963,6 +1160,13 @@ def create_task(db: Session, payload: TaskCreate) -> SocialTask:
         task=created_task,
         actor=creator,
         context={"media_count": len(created_task.assets)},
+    )
+    maybe_send_ready_preview_link(
+        db,
+        before_valid=False,
+        task=created_task,
+        actor=creator,
+        context={"trigger": "task_created"},
     )
     return created_task
 
@@ -1028,6 +1232,7 @@ def update_task(db: Session, task_id: str, payload: TaskUpdate, actor_name: str 
     task = get_task_by_id(db, task_id)
     actor = get_or_create_user(db, actor_name) if actor_name else None
     actor_id = actor.id if actor else None
+    before_valid = _task_is_publish_ready(task)
 
     changed_air_date = False
     changed_fields: dict[str, tuple[Any, Any]] = {}
@@ -1093,6 +1298,8 @@ def update_task(db: Session, task_id: str, payload: TaskUpdate, actor_name: str 
         _track_hashtag_usage(db, payload.hashtags, task.campaign_id, task.type)
 
     if changed_air_date and task.air_date:
+        from app.jobs import schedule_task_jobs
+
         schedule_task_jobs(db, task)
 
     db.commit()
@@ -1132,6 +1339,14 @@ def update_task(db: Session, task_id: str, payload: TaskUpdate, actor_name: str 
             context={"changed_fields": sorted(key_field_changes)},
         )
 
+    maybe_send_ready_preview_link(
+        db,
+        before_valid=before_valid,
+        task=updated_task,
+        actor=actor,
+        context={"trigger": "task_updated", "changed_fields": sorted(changed_fields.keys())},
+    )
+
     return updated_task
 
 
@@ -1146,6 +1361,7 @@ def delete_task(db: Session, task_id: str, actor_name: str | None = None) -> Non
 def add_assets(db: Session, task_id: str, media_urls: list[str], actor_name: str | None = None) -> SocialTask:
     task = get_task_by_id(db, task_id)
     actor = get_or_create_user(db, actor_name) if actor_name else None
+    before_valid = _task_is_publish_ready(task)
     clean_urls = [url.strip() for url in media_urls if str(url or "").strip()]
     _attach_assets(db, task, clean_urls, actor.id if actor else None)
     db.commit()
@@ -1158,6 +1374,13 @@ def add_assets(db: Session, task_id: str, media_urls: list[str], actor_name: str
             actor=actor,
             context={"media_count": len(clean_urls)},
         )
+    maybe_send_ready_preview_link(
+        db,
+        before_valid=before_valid,
+        task=updated_task,
+        actor=actor,
+        context={"trigger": "assets_uploaded", "media_count": len(clean_urls)},
+    )
     return updated_task
 
 
@@ -1170,6 +1393,7 @@ def add_base64_assets(
     task = get_task_by_id(db, task_id)
     actor = get_or_create_user(db, actor_name) if actor_name else None
     actor_id = actor.id if actor else None
+    before_valid = _task_is_publish_ready(task)
     uploaded_count = 0
 
     for item in files:
@@ -1195,6 +1419,13 @@ def add_base64_assets(
             actor=actor,
             context={"media_count": uploaded_count},
         )
+    maybe_send_ready_preview_link(
+        db,
+        before_valid=before_valid,
+        task=updated_task,
+        actor=actor,
+        context={"trigger": "base64_assets_uploaded", "media_count": uploaded_count},
+    )
     return updated_task
 
 
@@ -1244,6 +1475,7 @@ def add_comment(
 ) -> TaskComment:
     task = get_task_by_id(db, task_id)
     user = get_or_create_user(db, user_name) if user_name else None
+    before_valid = _task_is_publish_ready(task)
     comment = TaskComment(task_id=task.id, user_id=user.id if user else None, content=content, parent_id=parent_id)
     db.add(comment)
     log_activity(
@@ -1263,6 +1495,13 @@ def add_comment(
         task=commented_task,
         actor=user,
         context={"comment_text": content},
+    )
+    maybe_send_ready_preview_link(
+        db,
+        before_valid=before_valid,
+        task=commented_task,
+        actor=user,
+        context={"trigger": "comment_added"},
     )
     return comment
 
@@ -1302,7 +1541,7 @@ def replace_checklist(
 
 
 def validate_for_task(task: SocialTask):
-    campaign_requires_url = bool(task.campaign and task.campaign.requires_product_url)
+    campaign_requires_url = _campaign_requires_product_url(task)
     return validate_task(task, campaign_requires_url)
 
 

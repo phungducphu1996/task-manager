@@ -8,12 +8,14 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import BOT_OWNER_FALLBACK, DAILY_DIGEST_HOUR_LOCAL, DASHBOARD_BASE_URL, SOCIAL_GROUP_CHAT_ID
 from app.models import NotificationJob, NotificationLog, SocialTask, SystemSetting
 from app.notifier import send_package, send_text
+from app.services import PREVIEW_REASON_T_MINUS_1H, send_preview_link_notification
 from app.task_notifications import SETTING_SOCIAL_GROUP_CHAT_ID
 from app.validation import LOCAL_TZ, ValidationResult, ensure_localized_air_date, validate_task
 
 JOB_T_MINUS_3 = "t_minus_3_status"
 JOB_T_MINUS_2 = "t_minus_2_product_url"
 JOB_T_MINUS_1 = "t_minus_1_validate"
+JOB_T_MINUS_1H_PREVIEW_LINK = "t_minus_1h_preview_link"
 JOB_AIRDATE_1900 = "airdate_1900_full_post"
 JOB_DAILY_DIGEST_0900 = "daily_digest_0900"
 SETTING_DAILY_DIGEST_LAST_SENT_LOCAL_DATE = "daily_digest_last_sent_local_date"
@@ -22,6 +24,7 @@ ALL_REMINDER_JOB_TYPES = [
     JOB_T_MINUS_3,
     JOB_T_MINUS_2,
     JOB_T_MINUS_1,
+    JOB_T_MINUS_1H_PREVIEW_LINK,
     JOB_AIRDATE_1900,
 ]
 
@@ -44,6 +47,7 @@ def build_task_schedule(task: SocialTask) -> dict[str, datetime]:
         JOB_T_MINUS_3: _to_utc(local_air - timedelta(days=3)),
         JOB_T_MINUS_2: _to_utc(local_air - timedelta(days=2)),
         JOB_T_MINUS_1: _to_utc(local_air - timedelta(days=1)),
+        JOB_T_MINUS_1H_PREVIEW_LINK: _to_utc(local_air - timedelta(hours=1)),
         JOB_AIRDATE_1900: _to_utc(final_local),
     }
 
@@ -373,6 +377,21 @@ def process_due_jobs(db: Session, now_utc: datetime, limit: int = 200) -> list[d
             )
             payload["missing_fields"] = validation.missing_fields
             notify_result = send_text(message)
+        elif job.job_type == JOB_T_MINUS_1H_PREVIEW_LINK:
+            preview_result = send_preview_link_notification(
+                db,
+                task=task,
+                reason=PREVIEW_REASON_T_MINUS_1H,
+                context={"trigger": "reminder_job", "job_id": job.id},
+            )
+            payload["preview_result"] = preview_result
+            notify_result = {"ok": bool(preview_result.get("ok"))}
+            if preview_result.get("skipped") == "already_sent":
+                message = f"[T-1H] Preview link already sent for task {task.title}."
+            elif preview_result.get("ok"):
+                message = f"[T-1H] Preview link sent for task {task.title}."
+            else:
+                message = f"[T-1H] Preview link failed for task {task.title}."
         elif job.job_type == JOB_AIRDATE_1900:
             if validation.ok:
                 package = _build_full_post_package(task)

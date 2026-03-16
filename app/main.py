@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -392,58 +393,52 @@ def _render_public_preview_error_page(title: str, message: str) -> str:
 
 
 def _render_public_preview_page(payload: dict) -> str:
-    title = html.escape(str(payload.get("title") or "Untitled task"))
-    task_type = _preview_type_label(str(payload.get("type") or ""))
-    status = html.escape(str(payload.get("status") or "idea").upper())
-    air_date = _format_preview_air_date(payload.get("air_date"))
-    campaign_name = html.escape(str(payload.get("campaign_name") or "No campaign"))
-    assignee_name = html.escape(str(payload.get("assignee_name") or "Unassigned"))
-    caption = html.escape(str(payload.get("caption") or "").strip())
-    quick_note = html.escape(str(payload.get("quick_note") or "").strip())
-    hashtags = html.escape(" ".join(payload.get("hashtags") or []))
-    mentions = html.escape(" ".join(payload.get("mentions") or []))
+    raw_title = str(payload.get("title") or "Untitled task").strip() or "Untitled task"
+    type_key = str(payload.get("type") or "").strip().lower()
+    task_type = _preview_type_label(type_key)
+    status_text = str(payload.get("status") or "idea").strip().upper()
+    air_date_text = _format_preview_air_date(payload.get("air_date"))
+    campaign_name = str(payload.get("campaign_name") or "No campaign").strip() or "No campaign"
+    assignee_name = str(payload.get("assignee_name") or "Unassigned").strip() or "Unassigned"
+    caption_text = str(payload.get("caption") or "").strip()
+    hashtag_text = " ".join(payload.get("hashtags") or []).strip()
+    mention_text = " ".join(payload.get("mentions") or []).strip()
+    quick_note_text = str(payload.get("quick_note") or "").strip()
     expires_at = payload.get("token_expires_at")
     expires_text = _format_preview_air_date(expires_at) if isinstance(expires_at, datetime) else "Unknown"
 
-    assets = payload.get("assets") or []
-    asset_items: list[str] = []
-    for idx, asset in enumerate(assets):
+    assets_data = []
+    for asset in payload.get("assets") or []:
         url = str(asset.get("url") or "").strip()
         if not url:
             continue
-        kind = str(asset.get("kind") or "image").lower()
-        safe_url = html.escape(url)
-        if kind == "video":
-            node = (
-                f'<figure class="asset-card"><video controls preload="metadata" src="{safe_url}"></video>'
-                f'<figcaption>Media {idx + 1}</figcaption></figure>'
-            )
-        else:
-            node = (
-                f'<figure class="asset-card"><img src="{safe_url}" alt="media {idx + 1}" />'
-                f'<figcaption>Media {idx + 1}</figcaption></figure>'
-            )
-        asset_items.append(node)
-    assets_html = "".join(asset_items)
+        kind = str(asset.get("kind") or "image").strip().lower()
+        assets_data.append({"kind": "video" if kind == "video" else "image", "url": url})
 
-    if not assets_html:
-        fallback_text = quick_note or "No media yet."
-        assets_html = (
-            '<div class="no-media">'
-            f"<p>{fallback_text}</p>"
-            "</div>"
-        )
-
-    caption_html = caption or "<em>No caption</em>"
-    hashtags_html = hashtags or "<em>No hashtags</em>"
-    mentions_html = mentions or "<em>No mentions</em>"
+    preview_data = {
+        "title": raw_title,
+        "type": type_key or "post",
+        "type_label": task_type,
+        "status": status_text,
+        "air_date": air_date_text,
+        "campaign_name": campaign_name,
+        "assignee_name": assignee_name,
+        "caption": caption_text,
+        "hashtags": hashtag_text,
+        "mentions": mention_text,
+        "quick_note": quick_note_text,
+        "expires_at": expires_text,
+        "assets": assets_data,
+    }
+    payload_json = json.dumps(preview_data, ensure_ascii=False).replace("</", "<\\/")
+    page_title = html.escape(raw_title)
 
     return f"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Public Preview - {title}</title>
+    <title>Public Preview - {page_title}</title>
     <style>
       :root {{
         color-scheme: light;
@@ -454,10 +449,10 @@ def _render_public_preview_page(payload: dict) -> str:
         font-family: "Wix Madefor Display", "Segoe UI", sans-serif;
         background: #f0f1f4;
         color: #111;
-        padding: 20px;
+        padding: 16px;
       }}
       .wrap {{
-        width: min(960px, 100%);
+        width: min(980px, 100%);
         margin: 0 auto;
         border: 2px solid #222;
         border-radius: 24px;
@@ -465,111 +460,388 @@ def _render_public_preview_page(payload: dict) -> str:
         overflow: hidden;
       }}
       .head {{
-        padding: 18px 20px;
+        padding: 16px 18px;
         border-bottom: 2px solid #222;
         background: #fdf3df;
       }}
       .head h1 {{
         margin: 0;
-        font-size: 2rem;
+        font-size: 1.65rem;
         line-height: 1.1;
       }}
       .meta {{
-        margin-top: 8px;
+        margin-top: 6px;
         color: #565142;
-        font-size: 0.98rem;
+        font-size: 0.92rem;
+      }}
+      .chip-row {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
       }}
       .chip {{
         display: inline-flex;
         padding: 3px 9px;
         border: 1.6px solid #222;
-        border-radius: 999px;
-        margin-right: 8px;
-        margin-top: 6px;
+        border-radius: 999px;        
         font-size: 0.82rem;
         font-weight: 700;
       }}
       .body {{
-        padding: 16px 20px 24px;
+        padding: 14px 16px 20px;
       }}
-      .assets {{
-        display: grid;
-        gap: 12px;
+      .toolbar {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
       }}
-      .asset-card {{
-        margin: 0;
+      .device-switch {{
+        display: inline-flex;
+        gap: 8px;
+      }}
+      .switch-btn,
+      .ghost-btn {{
+        border: 1.8px solid #222;
+        border-radius: 999px;
+        background: #fff;
+        padding: 6px 12px;
+        font: inherit;
+        font-size: 0.86rem;
+        font-weight: 700;
+        cursor: pointer;
+      }}
+      .switch-btn.active {{
+        background: #ffe9d4;
+      }}
+      .ghost-btn[disabled] {{
+        opacity: 0.55;
+        cursor: default;
+      }}
+      .ig-shell {{
+        margin-top: 10px;
         border: 2px solid #222;
         border-radius: 16px;
-        overflow: hidden;
         background: #fff;
+        padding: 12px;
       }}
-      .asset-card img,
-      .asset-card video {{
-        width: 100%;
-        max-height: 540px;
-        object-fit: contain;
+      .ig-shell.device-mobile {{
+        max-width: 420px;
+        margin-left: auto;
+        margin-right: auto;
+      }}
+      .ig-shell.device-desktop {{
+        max-width: 760px;
+        margin-left: auto;
+        margin-right: auto;
+      }}
+      .ig-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }}
+      .ig-user {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .ig-platform {{
+        border-radius: 999px;
+        background: #d94e78;
+        color: #fff;
+        font-size: 0.76rem;
+        font-weight: 700;
+        padding: 3px 9px;
+      }}
+      .ig-type {{
+        border: 1.8px solid #222;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        background: #fff7df;
+      }}
+      .ig-media-wrap {{
+        margin-top: 10px;
+        border: 2px solid #222;
+        border-radius: 14px;
+        overflow: hidden;
         background: #f2f0e2;
-        display: block;
+        width: 100%;
+        aspect-ratio: 1 / 1;
       }}
-      .asset-card figcaption {{
-        padding: 8px 10px;
-        font-size: 0.84rem;
-        color: #5a564a;
+      .ig-media-wrap.story {{
+        aspect-ratio: 9 / 16;
+      }}
+      .ig-media {{
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        background: #f2f0e2;
       }}
       .no-media {{
-        border: 2px dashed #777;
-        border-radius: 16px;
-        padding: 24px;
-        background: #f2f0e2;
-      }}
-      .no-media p {{
-        margin: 0;
+        width: 100%;
+        height: 100%;
+        padding: 14px;
+        display: grid;
+        align-content: center;
         white-space: pre-wrap;
+        word-break: break-word;
+        color: #4d493f;
       }}
-      .content {{
-        margin-top: 16px;
-        border-top: 1px solid #ddd6c3;
-        padding-top: 14px;
+      .carousel {{
+        margin-top: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .carousel-label {{
+        min-width: 56px;
+        text-align: center;
+        color: #5f5a4d;
+        font-size: 0.84rem;
+      }}
+      .fields {{
+        margin-top: 12px;
         display: grid;
         gap: 10px;
       }}
-      .label {{
+      .field {{
+        border: 1.8px solid #222;
+        border-radius: 12px;
+        background: #fff;
+        padding: 10px 12px;
+      }}
+      .field-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }}
+      .field-label {{
         font-size: 0.78rem;
         color: #6a6456;
         text-transform: uppercase;
         letter-spacing: 0.06em;
+        font-weight: 700;
       }}
-      .text {{
+      .copy-btn {{
+        border: 1.6px solid #222;
+        border-radius: 999px;
+        background: #fff;
+        padding: 2px 8px;
+        font: inherit;
+        font-size: 0.75rem;
+        cursor: pointer;
+      }}
+      .field-value {{
+        margin-top: 6px;
+        margin: 0;
         white-space: pre-wrap;
         word-break: break-word;
+      }}
+      .field-value.empty {{
+        color: #666053;
+        font-style: italic;
       }}
       .foot {{
         margin-top: 14px;
         font-size: 0.82rem;
         color: #686251;
       }}
+      @media (max-width: 640px) {{
+        .head h1 {{ font-size: 1.35rem; }}
+        .body {{ padding: 12px; }}
+      }}
     </style>
   </head>
   <body>
     <article class="wrap">
       <header class="head">
-        <h1>{title}</h1>
-        <div class="meta">{html.escape(task_type)} · {html.escape(air_date)} · {status}</div>
-        <div>
-          <span class="chip">Campaign: {campaign_name}</span>
-          <span class="chip">Assignee: {assignee_name}</span>
+        <h1 id="taskTitle">{page_title}</h1>
+        <div class="meta" id="metaLine"></div>
+        <div class="chip-row">
+          <span class="chip" id="campaignChip"></span>
+          <span class="chip" id="assigneeChip"></span>
         </div>
       </header>
       <section class="body">
-        <div class="assets">{assets_html}</div>
-        <div class="content">
-          <div><div class="label">Caption</div><div class="text">{caption_html}</div></div>
-          <div><div class="label">Hashtags</div><div class="text">{hashtags_html}</div></div>
-          <div><div class="label">Mentions</div><div class="text">{mentions_html}</div></div>
+        <div class="toolbar">
+          <div class="device-switch">
+            <button class="switch-btn active" id="desktopBtn" type="button">Desktop</button>
+            <button class="switch-btn" id="mobileBtn" type="button">Mobile</button>
+          </div>
+          <button class="ghost-btn" id="copyContentBtn" type="button">Copy Content</button>
+        </div>
+        <div class="ig-shell device-desktop" id="igShell">
+          <header class="ig-head">
+            <div class="ig-user">
+              <span class="ig-platform">IG</span>
+              <strong id="igUser"></strong>
+            </div>
+            <span class="ig-type" id="igType"></span>
+          </header>
+          <div class="ig-media-wrap" id="mediaWrap"></div>
+          <div class="carousel" id="carouselRow">
+            <button class="ghost-btn" id="prevBtn" type="button">Prev</button>
+            <span class="carousel-label" id="carouselLabel"></span>
+            <button class="ghost-btn" id="nextBtn" type="button">Next</button>
+          </div>
+          <div class="fields" id="fieldRows"></div>
         </div>
         <p class="foot">This is a read-only public preview link. Expires at {html.escape(expires_text)} (+07).</p>
       </section>
     </article>
+    <script id="previewPayload" type="application/json">{payload_json}</script>
+    <script>
+      const payload = JSON.parse(document.getElementById("previewPayload").textContent || "{{}}");
+      const state = {{
+        device: "desktop",
+        index: 0,
+      }};
+      const desktopBtn = document.getElementById("desktopBtn");
+      const mobileBtn = document.getElementById("mobileBtn");
+      const igShell = document.getElementById("igShell");
+      const mediaWrap = document.getElementById("mediaWrap");
+      const carouselRow = document.getElementById("carouselRow");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const carouselLabel = document.getElementById("carouselLabel");
+      const fieldRows = document.getElementById("fieldRows");
+      const igUser = document.getElementById("igUser");
+      const igType = document.getElementById("igType");
+      const title = document.getElementById("taskTitle");
+      const metaLine = document.getElementById("metaLine");
+      const campaignChip = document.getElementById("campaignChip");
+      const assigneeChip = document.getElementById("assigneeChip");
+      const copyContentBtn = document.getElementById("copyContentBtn");
+      const assets = Array.isArray(payload.assets) ? payload.assets : [];
+      const typeValue = String(payload.type || "post").toLowerCase();
+
+      function setDevice(device) {{
+        state.device = device;
+        desktopBtn.classList.toggle("active", device === "desktop");
+        mobileBtn.classList.toggle("active", device === "mobile");
+        igShell.classList.toggle("device-desktop", device === "desktop");
+        igShell.classList.toggle("device-mobile", device === "mobile");
+      }}
+
+      function currentAsset() {{
+        if (assets.length === 0) return null;
+        const safeIndex = Math.min(Math.max(state.index, 0), assets.length - 1);
+        return assets[safeIndex];
+      }}
+
+      function copyText(value) {{
+        const text = String(value || "").trim();
+        if (!text) return;
+        navigator.clipboard?.writeText(text).catch(() => {{}});
+      }}
+
+      function renderMedia() {{
+        const asset = currentAsset();
+        mediaWrap.innerHTML = "";
+        mediaWrap.classList.toggle("story", typeValue === "story");
+        if (!asset) {{
+          const noMedia = document.createElement("div");
+          noMedia.className = "no-media";
+          noMedia.textContent = payload.quick_note || "No media yet";
+          mediaWrap.appendChild(noMedia);
+        }} else if (String(asset.kind || "").toLowerCase() === "video") {{
+          const video = document.createElement("video");
+          video.className = "ig-media";
+          video.src = asset.url;
+          video.controls = true;
+          video.playsInline = true;
+          mediaWrap.appendChild(video);
+        }} else {{
+          const img = document.createElement("img");
+          img.className = "ig-media";
+          img.src = asset.url;
+          img.alt = "";
+          mediaWrap.appendChild(img);
+        }}
+        if (assets.length > 1) {{
+          carouselRow.style.display = "inline-flex";
+          carouselLabel.textContent = `${{Math.min(state.index + 1, assets.length)}}/${{assets.length}}`;
+        }} else {{
+          carouselRow.style.display = "none";
+        }}
+      }}
+
+      function renderFields() {{
+        const rows = [
+          {{ label: "Caption", value: payload.caption || "", empty: "No caption" }},
+          {{ label: "Hashtags", value: payload.hashtags || "", empty: "No hashtags" }},
+          {{ label: "Mentions", value: payload.mentions || "", empty: "No mentions" }},
+          {{ label: "Quick note", value: payload.quick_note || "", empty: "No quick note" }},
+        ];
+        fieldRows.innerHTML = "";
+        rows.forEach((row) => {{
+          const article = document.createElement("article");
+          article.className = "field";
+          const header = document.createElement("div");
+          header.className = "field-head";
+          const label = document.createElement("span");
+          label.className = "field-label";
+          label.textContent = row.label;
+          const copy = document.createElement("button");
+          copy.className = "copy-btn";
+          copy.type = "button";
+          copy.textContent = "⧉ Copy";
+          copy.disabled = !String(row.value || "").trim();
+          copy.addEventListener("click", () => copyText(row.value));
+          header.appendChild(label);
+          header.appendChild(copy);
+          const value = document.createElement("p");
+          value.className = "field-value";
+          if (!String(row.value || "").trim()) {{
+            value.classList.add("empty");
+            value.textContent = row.empty;
+          }} else {{
+            value.textContent = row.value;
+          }}
+          article.appendChild(header);
+          article.appendChild(value);
+          fieldRows.appendChild(article);
+        }});
+      }}
+
+      function render() {{
+        title.textContent = payload.title || "Untitled task";
+        metaLine.textContent = `${{payload.type_label || "Task"}} · ${{payload.air_date || "No air date"}} · ${{payload.status || "IDEA"}}`;
+        campaignChip.textContent = `Campaign: ${{payload.campaign_name || "No campaign"}}`;
+        assigneeChip.textContent = `Assignee: ${{payload.assignee_name || "Unassigned"}}`;
+        igUser.textContent = payload.assignee_name || "Content Team";
+        igType.textContent = String(payload.type || "post").toUpperCase();
+        renderMedia();
+        renderFields();
+      }}
+
+      desktopBtn.addEventListener("click", () => setDevice("desktop"));
+      mobileBtn.addEventListener("click", () => setDevice("mobile"));
+      prevBtn.addEventListener("click", () => {{
+        if (!assets.length) return;
+        state.index = (state.index - 1 + assets.length) % assets.length;
+        renderMedia();
+      }});
+      nextBtn.addEventListener("click", () => {{
+        if (!assets.length) return;
+        state.index = (state.index + 1) % assets.length;
+        renderMedia();
+      }});
+      copyContentBtn.addEventListener("click", () => {{
+        const packageText = [payload.caption, payload.hashtags, payload.mentions].filter(Boolean).join("\\n").trim();
+        copyText(packageText);
+      }});
+
+      setDevice("desktop");
+      render();
+    </script>
   </body>
 </html>"""
 

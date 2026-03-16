@@ -69,11 +69,14 @@ def validate_task(task, campaign_requires_product_url: bool = False) -> Validati
         missing.append("assignee")
 
     if task_type == TYPE_STORY:
-        if not caption and not hashtags and not mentions:
-            missing.append("caption_or_hashtags_or_mentions")
+        pass
     elif task_type in {TYPE_REEL, TYPE_POST}:
         if not caption:
             missing.append("caption")
+        if not hashtags:
+            missing.append("hashtags")
+        if not mentions:
+            missing.append("mentions")
 
     if campaign_requires_product_url and not product_url:
         missing.append("product_url")

@@ -447,7 +447,8 @@ function previewPackageText() {
   const lines = [
     previewCaptionText(),
     previewHashtagText(),
-    previewMentionText()
+    previewMentionText(),
+    normalizeQuickNote(contentForm.quick_note || selectedTask.value?.quick_note || '')
   ].filter(Boolean)
   return lines.join('\n').trim()
 }
@@ -1417,9 +1418,13 @@ const previewQuickNoteText = computed(() => {
   return normalizeQuickNote(contentForm.quick_note || selectedTask.value?.quick_note || '')
 })
 
-const previewBodyText = computed(() => {
-  const parts = [previewCaptionText(), previewHashtagText(), previewMentionText()].filter(Boolean)
-  return parts.join('\n')
+const previewFieldCards = computed(() => {
+  return [
+    { key: 'caption', label: 'Caption', value: previewCaptionText(), emptyLabel: 'No caption' },
+    { key: 'hashtags', label: 'Hashtags', value: previewHashtagText(), emptyLabel: 'No hashtags' },
+    { key: 'mentions', label: 'Mentions', value: previewMentionText(), emptyLabel: 'No mentions' },
+    { key: 'quick_note', label: 'Quick note', value: previewQuickNoteText.value, emptyLabel: 'No quick note' },
+  ]
 })
 
 const previewPublicUrl = computed(() => {
@@ -1823,6 +1828,20 @@ async function copyPreviewPackage() {
   try {
     await navigator.clipboard.writeText(packageText)
     showToast('Post package copied')
+  } catch {
+    showToast('Copy failed', true)
+  }
+}
+
+async function copyPreviewField(fieldValue, fieldLabel) {
+  const text = String(fieldValue || '').trim()
+  if (!text) {
+    showToast(`No ${String(fieldLabel || 'field').toLowerCase()} to copy`, true)
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast(`${fieldLabel} copied`)
   } catch {
     showToast('Copy failed', true)
   }
@@ -3066,9 +3085,24 @@ onUnmounted(() => {
             <button class="ghost-btn" type="button" @click="previewNextMedia">Next</button>
           </div>
 
-          <p v-if="selectedTask?.type !== 'story'" class="ig-preview-caption">
-            {{ previewBodyText || previewQuickNoteText || 'No caption yet' }}
-          </p>
+          <div class="ig-preview-fields">
+            <article v-for="field in previewFieldCards" :key="field.key" class="ig-preview-field">
+              <header class="ig-preview-field-head">
+                <span class="ig-preview-field-label">{{ field.label }}</span>
+                <button
+                  class="ig-preview-copy-btn"
+                  type="button"
+                  :disabled="!String(field.value || '').trim()"
+                  @click="copyPreviewField(field.value, field.label)"
+                >
+                  ⧉
+                </button>
+              </header>
+              <p class="ig-preview-field-value" :class="{ empty: !String(field.value || '').trim() }">
+                {{ String(field.value || '').trim() || field.emptyLabel }}
+              </p>
+            </article>
+          </div>
         </div>
       </div>
 

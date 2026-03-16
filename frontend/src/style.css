@@ -1543,11 +1543,59 @@ h2 {
   color: #565142;
 }
 
-.ig-preview-caption {
-  margin: 0;
+.ig-preview-fields {
+  display: grid;
+  gap: 8px;
+}
+
+.ig-preview-field {
+  border: 1.8px solid #232323;
+  border-radius: 12px;
+  background: #fff;
+  padding: 8px 10px;
+}
+
+.ig-preview-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ig-preview-field-label {
+  font-size: 0.76rem;
+  color: #6a6456;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+.ig-preview-copy-btn {
+  border: 1.6px solid #232323;
+  border-radius: 999px;
+  background: #fff;
+  width: 28px;
+  height: 24px;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.ig-preview-copy-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ig-preview-field-value {
+  margin: 6px 0 0;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.5;
+  line-height: 1.4;
+}
+
+.ig-preview-field-value.empty {
+  color: #625d50;
+  font-style: italic;
 }
 
 .form-grid {
