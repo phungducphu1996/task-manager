@@ -1,4 +1,4 @@
-@import url("https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Wix+Madefor+Display:wght@400;500;600;700;800&display=swap");
 
 :root {
   --ink: #101010;
@@ -23,7 +23,7 @@ body {
   margin: 0;
   min-height: 100%;
   color: var(--ink);
-  font-family: "Clash Display", "Avenir Next", "Segoe UI", sans-serif;
+  font-family: "Wix Madefor Display", "Avenir Next", "Segoe UI", sans-serif;
 }
 
 body {
