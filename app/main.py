@@ -155,6 +155,8 @@ def _ensure_compat_schema() -> None:
 
             if not _has_column("social_tasks", "quick_note"):
                 conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."social_tasks" ADD COLUMN quick_note VARCHAR(256)')
+            if not _has_column("social_tasks", "note_color"):
+                conn.exec_driver_sql(f'ALTER TABLE "{schema_name}"."social_tasks" ADD COLUMN note_color VARCHAR(20)')
 
             if not _has_column("campaigns", "status"):
                 conn.exec_driver_sql(
@@ -238,6 +240,8 @@ def _ensure_compat_schema() -> None:
         task_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(social_tasks)").fetchall()}
         if "quick_note" not in task_columns:
             conn.exec_driver_sql("ALTER TABLE social_tasks ADD COLUMN quick_note VARCHAR(256)")
+        if "note_color" not in task_columns:
+            conn.exec_driver_sql("ALTER TABLE social_tasks ADD COLUMN note_color VARCHAR(20)")
 
         campaign_columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(campaigns)").fetchall()}
         if "status" not in campaign_columns:

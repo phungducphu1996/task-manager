@@ -3,10 +3,12 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 
 const AUTH_STORAGE_KEY = 'social_shared_auth'
 const TIMELINE_PREFS_KEY = 'social_timeline_prefs_v1'
+const DEFAULT_NOTE_COLOR = '#f2f0e2'
 const DEFAULT_CAMPAIGN_COLOR = '#d8d2bc'
 const DEFAULT_CAMPAIGN_ICON = '📌'
 const QUICK_NOTE_MAX_LENGTH = 256
 const COMMENT_MEDIA_PREFIX = '[media]'
+const NOTE_COLOR_PRESETS = ['#f2f0e2', '#f4e2ef', '#e6ecf9', '#fde7d7', '#dff5e8', '#fff3c8', '#e8e4fb', '#f8f8f8']
 const CAMPAIGN_COLOR_PRESETS = ['#3f5bd8', '#6a38c2', '#cb4295', '#ea6230', '#e59638', '#d9b743', '#59b058', '#59b6b8']
 const CAMPAIGN_ICON_PRESETS = ['📌', '🏃', '⭐', '💡', '📅', '🎁', '🎄', '🍎', '🎉', '🎯', '⚡', '❤️', '🏆', '🚀']
 const statusOrder = ['idea', 'design', 'ready', 'posted']
@@ -70,6 +72,8 @@ const notePreview = reactive({
   taskId: '',
   title: '',
   note: '',
+  color: DEFAULT_NOTE_COLOR,
+  savedColor: DEFAULT_NOTE_COLOR,
   draft: '',
   airDate: null,
   source: '',
@@ -93,6 +97,7 @@ const toast = reactive({
 const contentForm = reactive({
   title: '',
   quick_note: '',
+  note_color: DEFAULT_NOTE_COLOR,
   caption: '',
   hashtags: '',
   mentions: '',
@@ -370,7 +375,7 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function sanitizeHexColor(value, fallback = '#f2f0e2') {
+function sanitizeHexColor(value, fallback = DEFAULT_NOTE_COLOR) {
   const raw = String(value || '').trim()
   return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw.toLowerCase() : fallback
 }
@@ -388,6 +393,22 @@ function normalizeQuickNote(value) {
   const raw = String(value ?? '')
   if (!raw.trim()) return ''
   return raw.trim().slice(0, QUICK_NOTE_MAX_LENGTH)
+}
+
+function taskNoteColor(task) {
+  return sanitizeHexColor(task?.note_color, DEFAULT_NOTE_COLOR)
+}
+
+function noteCardStyle(task) {
+  return { '--note-bg': taskNoteColor(task) }
+}
+
+function setContentNoteColor(value) {
+  contentForm.note_color = sanitizeHexColor(value, DEFAULT_NOTE_COLOR)
+}
+
+function setNotePreviewColor(value) {
+  notePreview.color = sanitizeHexColor(value, DEFAULT_NOTE_COLOR)
 }
 
 function parseCommentContent(raw) {
@@ -463,10 +484,13 @@ function previewQuickNote(value, maxLength = 84) {
 function openNotePreview(task, source = 'board') {
   const note = normalizeQuickNote(task?.quick_note)
   if (!note) return
+  const color = taskNoteColor(task)
   notePreview.open = true
   notePreview.taskId = String(task?.id || '')
   notePreview.title = task?.title || 'Untitled task'
   notePreview.note = note
+  notePreview.savedColor = color
+  notePreview.color = color
   notePreview.draft = note
   notePreview.airDate = task?.air_date || null
   notePreview.source = source
@@ -477,6 +501,8 @@ function closeNotePreview() {
   notePreview.taskId = ''
   notePreview.title = ''
   notePreview.note = ''
+  notePreview.color = DEFAULT_NOTE_COLOR
+  notePreview.savedColor = DEFAULT_NOTE_COLOR
   notePreview.draft = ''
   notePreview.airDate = null
   notePreview.source = ''
@@ -490,18 +516,34 @@ function openTaskFromNotePreview() {
   openTask(taskId)
 }
 
-function applyQuickNoteToLocalState(taskId, noteValue) {
-  calendarTasks.value = calendarTasks.value.map((task) => (task.id === taskId ? { ...task, quick_note: noteValue } : task))
+function applyQuickNoteToLocalState(taskId, noteValue, noteColor = undefined) {
+  const normalizedColor = noteColor === undefined ? undefined : sanitizeHexColor(noteColor, DEFAULT_NOTE_COLOR)
+  calendarTasks.value = calendarTasks.value.map((task) =>
+    task.id === taskId
+      ? { ...task, quick_note: noteValue, ...(normalizedColor === undefined ? {} : { note_color: normalizedColor }) }
+      : task
+  )
 
   const nextKanban = {}
   statusOrder.forEach((status) => {
-    nextKanban[status] = (kanban.value[status] || []).map((task) => (task.id === taskId ? { ...task, quick_note: noteValue } : task))
+    nextKanban[status] = (kanban.value[status] || []).map((task) =>
+      task.id === taskId
+        ? { ...task, quick_note: noteValue, ...(normalizedColor === undefined ? {} : { note_color: normalizedColor }) }
+        : task
+    )
   })
   kanban.value = nextKanban
 
   if (selectedTask.value?.id === taskId) {
-    selectedTask.value = { ...selectedTask.value, quick_note: noteValue }
+    selectedTask.value = {
+      ...selectedTask.value,
+      quick_note: noteValue,
+      ...(normalizedColor === undefined ? {} : { note_color: normalizedColor }),
+    }
     contentForm.quick_note = noteValue || ''
+    if (normalizedColor !== undefined) {
+      contentForm.note_color = normalizedColor
+    }
   }
 }
 
@@ -509,7 +551,9 @@ async function saveNoteFromPreview() {
   if (!notePreview.taskId) return
   const normalizedDraft = normalizeQuickNote(notePreview.draft)
   const normalizedCurrent = normalizeQuickNote(notePreview.note)
-  if (normalizedDraft === normalizedCurrent) {
+  const normalizedColor = sanitizeHexColor(notePreview.color, DEFAULT_NOTE_COLOR)
+  const normalizedCurrentColor = sanitizeHexColor(notePreview.savedColor, DEFAULT_NOTE_COLOR)
+  if (normalizedDraft === normalizedCurrent && normalizedColor === normalizedCurrentColor) {
     showToast('No note changes yet')
     return
   }
@@ -518,12 +562,15 @@ async function saveNoteFromPreview() {
     await requestJson(`/tasks/${notePreview.taskId}?actor_name=${encodeURIComponent(actorName())}`, {
       method: 'PATCH',
       body: {
-        quick_note: normalizedDraft || null
+        quick_note: normalizedDraft || null,
+        note_color: normalizedColor
       }
     })
     notePreview.note = normalizedDraft
+    notePreview.savedColor = normalizedColor
+    notePreview.color = normalizedColor
     notePreview.draft = normalizedDraft
-    applyQuickNoteToLocalState(notePreview.taskId, normalizedDraft || null)
+    applyQuickNoteToLocalState(notePreview.taskId, normalizedDraft || null, normalizedColor)
     showToast('Quick note saved')
     closeNotePreview()
   } catch (error) {
@@ -1702,6 +1749,7 @@ function toDateTimeInputFromIsoDay(dayIso, hour = 19, minute = 0) {
 function resetDetailDraft(defaultStatus = 'idea') {
   contentForm.title = ''
   contentForm.quick_note = ''
+  contentForm.note_color = DEFAULT_NOTE_COLOR
   contentForm.caption = ''
   contentForm.hashtags = ''
   contentForm.mentions = ''
@@ -1752,6 +1800,7 @@ async function openTask(taskId, push = true) {
     const summary = summaryById.value.get(task.id)
     contentForm.title = task.title || ''
     contentForm.quick_note = normalizeQuickNote(task.quick_note || summary?.quick_note || '')
+    contentForm.note_color = sanitizeHexColor(task.note_color || summary?.note_color, DEFAULT_NOTE_COLOR)
     contentForm.caption = task.caption || ''
     contentForm.hashtags = (task.hashtags || []).join(' ')
     contentForm.mentions = (task.mentions || []).join(' ')
@@ -1947,6 +1996,7 @@ async function handleCreateFromDetail() {
     assignee_name: contentForm.assignee_name.trim() || null,
     campaign_name: contentForm.campaign_name.trim() || null,
     quick_note: normalizeQuickNote(contentForm.quick_note) || null,
+    note_color: sanitizeHexColor(contentForm.note_color, DEFAULT_NOTE_COLOR),
     caption: contentForm.caption.trim() || null,
     hashtags: parseSpaceList(contentForm.hashtags),
     mentions: parseSpaceList(contentForm.mentions),
@@ -1976,6 +2026,7 @@ async function handleSaveContent() {
     const payload = {
       title: contentForm.title.trim(),
       quick_note: normalizeQuickNote(contentForm.quick_note),
+      note_color: sanitizeHexColor(contentForm.note_color, DEFAULT_NOTE_COLOR),
       caption: contentForm.caption,
       hashtags: parseSpaceList(contentForm.hashtags),
       mentions: parseSpaceList(contentForm.mentions),
@@ -2422,6 +2473,7 @@ onUnmounted(() => {
                       v-if="normalizeQuickNote(task.quick_note)"
                       type="button"
                       class="kanban-note note-preview-btn"
+                      :style="noteCardStyle(task)"
                       :title="normalizeQuickNote(task.quick_note)"
                       @click.stop="openNotePreview(task, 'kanban')"
                     >
@@ -2572,12 +2624,13 @@ onUnmounted(() => {
                         v-else-if="normalizeQuickNote(task.quick_note)"
                         type="button"
                         class="timeline-no-media note-preview-btn"
+                        :style="noteCardStyle(task)"
                         :title="normalizeQuickNote(task.quick_note)"
                         @click.stop="openNotePreview(task, 'timeline')"
                       >
                         {{ previewQuickNote(task.quick_note, 118) }}
                       </button>
-                      <div v-else class="timeline-no-media">No media yet</div>
+                      <div v-else class="timeline-no-media" :style="noteCardStyle(task)">No media yet</div>
                       <div v-if="task.type === 'story' && isTimelineThumbVisible(task.media_thumbnail)" class="timeline-story-overlay">
                         <span class="timeline-story-icon">+</span>
                       </div>
@@ -2586,6 +2639,7 @@ onUnmounted(() => {
                       v-if="task.type !== 'story' && isTimelineThumbVisible(task.media_thumbnail) && normalizeQuickNote(task.quick_note)"
                       type="button"
                       class="timeline-content-snippet note-preview-btn"
+                      :style="noteCardStyle(task)"
                       :title="normalizeQuickNote(task.quick_note)"
                       @click.stop="openNotePreview(task, 'timeline')"
                     >
@@ -2795,6 +2849,30 @@ onUnmounted(() => {
               placeholder="Write short context for the card"
             ></textarea>
             <small class="field-counter">{{ (contentForm.quick_note || '').length }}/{{ QUICK_NOTE_MAX_LENGTH }}</small>
+          </label>
+          <label class="field full">
+            <span>Note color</span>
+            <div class="note-color-control-row">
+              <input
+                class="note-color-input"
+                type="color"
+                :value="contentForm.note_color"
+                @change="setContentNoteColor($event.target.value)"
+              />
+              <div class="note-color-preset-row">
+                <button
+                  v-for="color in NOTE_COLOR_PRESETS"
+                  :key="`task-note-${selectedTask?.id || 'new'}-${color}`"
+                  class="note-color-preset"
+                  type="button"
+                  :style="{ background: color }"
+                  :class="{ active: sanitizeHexColor(contentForm.note_color, DEFAULT_NOTE_COLOR) === color }"
+                  @click="setContentNoteColor(color)"
+                >
+                  <span v-if="sanitizeHexColor(contentForm.note_color, DEFAULT_NOTE_COLOR) === color">✓</span>
+                </button>
+              </div>
+            </div>
           </label>
           <label class="field full"><span>Caption</span><textarea v-model="contentForm.caption" rows="7"></textarea></label>
           <label class="field"><span>Hashtags (space separated)</span><input v-model="contentForm.hashtags" type="text" /></label>
@@ -3134,11 +3212,34 @@ onUnmounted(() => {
         <textarea
           v-model="notePreview.draft"
           class="note-preview-input"
+          :style="{ '--note-bg': notePreview.color }"
           :maxlength="QUICK_NOTE_MAX_LENGTH"
           rows="6"
           placeholder="Write quick note..."
         ></textarea>
         <p class="meta note-preview-meta note-preview-counter">{{ (notePreview.draft || '').length }}/{{ QUICK_NOTE_MAX_LENGTH }}</p>
+        <div v-if="notePreview.taskId" class="note-color-control-row note-color-control-row-modal">
+          <span class="note-color-control-label">Note color</span>
+          <input
+            class="note-color-input"
+            type="color"
+            :value="notePreview.color"
+            @change="setNotePreviewColor($event.target.value)"
+          />
+          <div class="note-color-preset-row">
+            <button
+              v-for="color in NOTE_COLOR_PRESETS"
+              :key="`preview-note-${notePreview.taskId}-${color}`"
+              class="note-color-preset"
+              type="button"
+              :style="{ background: color }"
+              :class="{ active: sanitizeHexColor(notePreview.color, DEFAULT_NOTE_COLOR) === color }"
+              @click="setNotePreviewColor(color)"
+            >
+              <span v-if="sanitizeHexColor(notePreview.color, DEFAULT_NOTE_COLOR) === color">✓</span>
+            </button>
+          </div>
+        </div>
         <div class="note-preview-actions">
           <button class="primary-btn save-btn" type="button" :disabled="notePreview.saving" @click="saveNoteFromPreview">
             {{ notePreview.saving ? 'Saving...' : 'Save Note' }}

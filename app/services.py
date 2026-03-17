@@ -156,6 +156,15 @@ def _normalize_campaign_color(value: str | None) -> str | None:
     return clean if HEX_COLOR_RE.fullmatch(clean) else None
 
 
+def _normalize_note_color(value: str | None) -> str | None:
+    if value is None:
+        return None
+    clean = str(value).strip().lower()
+    if not clean:
+        return None
+    return clean if HEX_COLOR_RE.fullmatch(clean) else None
+
+
 def _normalize_campaign_icon(value: str | None) -> str | None:
     if value is None:
         return None
@@ -1118,6 +1127,7 @@ def create_task(db: Session, payload: TaskCreate) -> SocialTask:
         type=payload.type.value,
         title=payload.title,
         quick_note=_normalize_quick_note(payload.quick_note),
+        note_color=_normalize_note_color(payload.note_color),
         caption=payload.caption,
         hashtags=payload.hashtags,
         mentions=payload.mentions,
@@ -1260,6 +1270,8 @@ def update_task(db: Session, task_id: str, payload: TaskUpdate, actor_name: str 
         update_field("caption", payload.caption)
     if payload.quick_note is not None:
         update_field("quick_note", _normalize_quick_note(payload.quick_note))
+    if payload.note_color is not None:
+        update_field("note_color", _normalize_note_color(payload.note_color))
     if payload.hashtags is not None:
         update_field("hashtags", payload.hashtags)
     if payload.mentions is not None:
@@ -1601,6 +1613,7 @@ def task_summary(task: SocialTask) -> dict:
         "id": task.id,
         "title": task.title,
         "quick_note": task.quick_note,
+        "note_color": task.note_color,
         "type": task.type,
         "air_date": _to_local(task.air_date),
         "status": task.status,
@@ -1663,6 +1676,7 @@ def calendar_view(
             "id": task.id,
             "title": task.title,
             "quick_note": task.quick_note,
+            "note_color": task.note_color,
             "type": task.type,
             "status": task.status,
             "air_date": _to_local(task.air_date),
@@ -1686,6 +1700,7 @@ def task_to_response(task: SocialTask) -> dict:
         "type": task.type,
         "title": task.title,
         "quick_note": task.quick_note,
+        "note_color": task.note_color,
         "caption": task.caption,
         "hashtags": task.hashtags or [],
         "mentions": task.mentions or [],

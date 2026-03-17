@@ -77,6 +77,7 @@ class TaskCreate(BaseModel):
     title: str
     type: TaskType
     quick_note: str | None = Field(default=None, max_length=256)
+    note_color: str | None = None
     hashtags: list[str] = Field(default_factory=list)
     mentions: list[str] = Field(default_factory=list)
     caption: str | None = None
@@ -98,6 +99,7 @@ class TaskUpdate(BaseModel):
     title: str | None = None
     type: TaskType | None = None
     quick_note: str | None = Field(default=None, max_length=256)
+    note_color: str | None = None
     hashtags: list[str] | None = None
     mentions: list[str] | None = None
     caption: str | None = None
@@ -346,6 +348,7 @@ class TaskOut(BaseModel):
     type: str
     title: str
     quick_note: str | None = None
+    note_color: str | None = None
     caption: str | None = None
     hashtags: list[str] = Field(default_factory=list)
     mentions: list[str] = Field(default_factory=list)

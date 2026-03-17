@@ -74,6 +74,7 @@ class SocialTask(Base):
     type: Mapped[str] = mapped_column(String(20), index=True)
     title: Mapped[str] = mapped_column(String(300))
     quick_note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    note_color: Mapped[str | None] = mapped_column(String(20), nullable=True)
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     hashtags: Mapped[list[str]] = mapped_column(JSON, default=list)
     mentions: Mapped[list[str]] = mapped_column(JSON, default=list)
