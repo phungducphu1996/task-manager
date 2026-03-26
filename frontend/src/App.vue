@@ -1244,7 +1244,7 @@ async function bootstrapAfterAuth() {
 
 function openUsersView() {
   activeView.value = 'users'
-  window.history.pushState({}, '', buildDashboardUrl('users'))
+  safePushState(buildDashboardUrl('users'))
 }
 
 async function createManagedUser() {
@@ -1730,9 +1730,23 @@ function buildDashboardUrl(suffix = '') {
   return cleanSuffix ? `${base}/${cleanSuffix}` : base
 }
 
+function safePushState(url) {
+  let next = String(url || '').trim()
+  if (!next) next = '/dashboard'
+  if (next.startsWith('//')) next = `/dashboard/${next.replace(/^\/+/, '')}`
+  if (!next.startsWith('/')) next = `/${next}`
+  try {
+    window.history.pushState({}, '', next)
+    return true
+  } catch (error) {
+    console.warn('history_push_failed', next, error)
+    return false
+  }
+}
+
 function openOverviewSection(targetId = null) {
   activeView.value = 'overview'
-  window.history.pushState({}, '', buildDashboardUrl())
+  safePushState(buildDashboardUrl())
   if (!targetId) return
   nextTick(() => {
     const el = document.getElementById(targetId)
@@ -1744,7 +1758,7 @@ function openOverviewSection(targetId = null) {
 
 function openCampaignsView() {
   activeView.value = 'campaigns'
-  window.history.pushState({}, '', buildDashboardUrl('campaigns'))
+  safePushState(buildDashboardUrl('campaigns'))
 }
 
 function toDateTimeInputFromIsoDay(dayIso, hour = 19, minute = 0) {
@@ -1784,7 +1798,7 @@ function openCreateInColumn(defaultStatus = 'idea') {
   previewCarouselIndex.value = 0
   activeTab.value = 'content'
   resetDetailDraft(defaultStatus)
-  window.history.pushState({}, '', buildDashboardUrl())
+  safePushState(buildDashboardUrl())
 }
 
 function openCreateForTimelineDay(dayIso) {
@@ -1831,7 +1845,7 @@ async function openTask(taskId, push = true) {
     statusValue.value = task.status
 
     if (push) {
-      window.history.pushState({}, '', buildDashboardUrl(`tasks/${task.id}`))
+      safePushState(buildDashboardUrl(`tasks/${task.id}`))
     }
   } catch (error) {
     showToast(`Failed to open task (${error.message})`, true)
@@ -1849,7 +1863,7 @@ function closeDetail() {
   previewCarouselIndex.value = 0
   clearPendingMedia(detailPendingMedia)
   clearPendingMedia(commentPendingMedia)
-  window.history.pushState({}, '', buildDashboardUrl())
+  safePushState(buildDashboardUrl())
 }
 
 async function refreshAndKeepDetail() {
