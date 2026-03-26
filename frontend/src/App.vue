@@ -1244,7 +1244,7 @@ async function bootstrapAfterAuth() {
 
 function openUsersView() {
   activeView.value = 'users'
-  window.history.pushState({}, '', `${dashboardBasePath()}/users`)
+  window.history.pushState({}, '', buildDashboardUrl('users'))
 }
 
 async function createManagedUser() {
@@ -1717,12 +1717,22 @@ async function loadDashboard() {
 }
 
 function dashboardBasePath() {
-  return window.location.pathname.startsWith('/dashboard') ? '/dashboard' : '/'
+  const path = String(window.location.pathname || '')
+  if (path.startsWith('/social/dashboard')) return '/social/dashboard'
+  if (path === '/social' || path.startsWith('/social/')) return '/social/dashboard'
+  if (path.startsWith('/dashboard')) return '/dashboard'
+  return '/dashboard'
+}
+
+function buildDashboardUrl(suffix = '') {
+  const base = dashboardBasePath().replace(/\/+$/, '')
+  const cleanSuffix = String(suffix || '').replace(/^\/+/, '')
+  return cleanSuffix ? `${base}/${cleanSuffix}` : base
 }
 
 function openOverviewSection(targetId = null) {
   activeView.value = 'overview'
-  window.history.pushState({}, '', dashboardBasePath())
+  window.history.pushState({}, '', buildDashboardUrl())
   if (!targetId) return
   nextTick(() => {
     const el = document.getElementById(targetId)
@@ -1734,7 +1744,7 @@ function openOverviewSection(targetId = null) {
 
 function openCampaignsView() {
   activeView.value = 'campaigns'
-  window.history.pushState({}, '', `${dashboardBasePath()}/campaigns`)
+  window.history.pushState({}, '', buildDashboardUrl('campaigns'))
 }
 
 function toDateTimeInputFromIsoDay(dayIso, hour = 19, minute = 0) {
@@ -1774,7 +1784,7 @@ function openCreateInColumn(defaultStatus = 'idea') {
   previewCarouselIndex.value = 0
   activeTab.value = 'content'
   resetDetailDraft(defaultStatus)
-  window.history.pushState({}, '', dashboardBasePath())
+  window.history.pushState({}, '', buildDashboardUrl())
 }
 
 function openCreateForTimelineDay(dayIso) {
@@ -1821,7 +1831,7 @@ async function openTask(taskId, push = true) {
     statusValue.value = task.status
 
     if (push) {
-      window.history.pushState({}, '', `${dashboardBasePath()}/tasks/${task.id}`)
+      window.history.pushState({}, '', buildDashboardUrl(`tasks/${task.id}`))
     }
   } catch (error) {
     showToast(`Failed to open task (${error.message})`, true)
@@ -1839,7 +1849,7 @@ function closeDetail() {
   previewCarouselIndex.value = 0
   clearPendingMedia(detailPendingMedia)
   clearPendingMedia(commentPendingMedia)
-  window.history.pushState({}, '', dashboardBasePath())
+  window.history.pushState({}, '', buildDashboardUrl())
 }
 
 async function refreshAndKeepDetail() {
@@ -2203,16 +2213,17 @@ async function onDropToStatus(status) {
 }
 
 function openFromPath() {
-  if (/^\/dashboard\/campaigns\/?$/.test(window.location.pathname)) {
+  const path = String(window.location.pathname || '')
+  if (/^\/(?:social\/)?dashboard\/campaigns\/?$/.test(path)) {
     activeView.value = 'campaigns'
     return
   }
-  if (/^\/dashboard\/users\/?$/.test(window.location.pathname)) {
+  if (/^\/(?:social\/)?dashboard\/users\/?$/.test(path)) {
     activeView.value = isAdmin.value ? 'users' : 'overview'
     return
   }
   activeView.value = 'overview'
-  const match = window.location.pathname.match(/^\/dashboard\/tasks?\/([^/]+)$/)
+  const match = path.match(/^\/(?:social\/)?dashboard\/tasks?\/([^/]+)\/?$/)
   if (match) {
     openTask(match[1], false)
   }
